@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build exe
+        shell: cmd
+        run: build_exe.bat
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iPhoneMonitor
+          path: |
+            dist/iPhoneMonitor.zip
+            dist/iPhoneMonitor.zip.sha256
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha=$(cut -d' ' -f1 dist/iPhoneMonitor.zip.sha256)
+          sed "s/{{SHA256}}/$sha/; s/{{VERSION}}/$GITHUB_REF_NAME/g" .github/release-notes.md > notes.md
+          gh release create "$GITHUB_REF_NAME" dist/iPhoneMonitor.zip dist/iPhoneMonitor.zip.sha256 \
+            --title "iPhone Monitor $GITHUB_REF_NAME" --notes-file notes.md

@@ -1,0 +1,7 @@
+__pycache__/
+monitor.log*
+last_battery_raw.json
+.build-venv/
+build/
+dist/
+*.spec

@@ -1,1 +1,71 @@
-# iphone_monitor
+# iPhone Monitor
+
+English | [简体中文](README.zh-CN.md)
+
+A lightweight Windows taskbar tool that shows a USB-connected iPhone's **battery, power draw, CPU and memory** in real time, and helps you figure out *why your iPhone is still draining while plugged in*. No jailbreak, nothing to install on the phone.
+
+![Taskbar strip: charging / at charge limit / draining while plugged in, in light, dark and compact layouts](docs/images/taskbar-strip.png)
+
+> The UI is currently in Simplified Chinese.
+
+## Features
+
+- **Taskbar strip** embedded in the Windows 11 taskbar: phone icon (bolt inside while charging, red while the battery is discharging), battery %, whole-phone power draw, and the phone's CPU and memory on the second line. Place it next to the tray or next to the widgets on the left; it switches to a compact layout when the taskbar gets crowded and falls back to a tray icon if there is no room.
+- **Details window**: system load, external supply (voltage × current), battery in/out power, 10-minute charts, and the processes using the most CPU. Docks to the screen corner and follows light/dark mode.
+- **Power supply diagnosis**: estimates the **source voltage** and **line resistance** from voltage/current samples (V = V₀ − I·R), so you can tell a bad cable from a weak port or a heavy workload. Alerts when the phone drains while plugged in or charges slowly.
+- **Charging insights**: charge limit (kept in sync with the phone setting by you), time-to-full estimate, daily battery health log, and a record of every charging session.
+- **Phone audio on your PC**: turns the PC into a Bluetooth speaker for the iPhone (A2DP sink), so phone audio plays through the headphones already plugged into your PC.
+- **Hotspot takeover warning**: warns when the iPhone's Personal Hotspot over USB takes over the PC's network.
+- **Lightweight**: about 0.1% of one core on the PC with the window closed; monitoring itself costs about 1–2% of one core on the phone.
+
+<p>
+<img src="docs/images/details.png" width="400" alt="Details window">
+<img src="docs/images/details-dark.png" width="400" alt="Details window (dark)">
+</p>
+<img src="docs/images/history.png" width="400" alt="Battery history">
+
+## Getting started
+
+1. Install **Apple Devices** from the Microsoft Store (required; it provides the Apple Mobile Device Service).
+2. Download `iPhoneMonitor.zip` from [Releases](https://github.com/by1907047/iphone_monitor/releases/latest), unzip it anywhere, and run `iPhoneMonitor.exe`.
+3. Connect the iPhone with a data cable, unlock it, and tap **Trust This Computer**.
+4. *(Optional)* For CPU / memory: enable **Developer Mode** on the iPhone (Settings → Privacy & Security → Developer Mode; the phone restarts once). On first use the app mounts the developer disk image automatically — keep the phone unlocked while it does.
+
+The exe is not code-signed, so Windows SmartScreen may warn on first launch: click **More info → Run anyway**. Each release lists the SHA256 of the zip.
+
+Logs, settings and history are stored in `%APPDATA%\iPhoneMonitor`.
+
+### Requirements
+
+- Windows 10 2004 or later; the taskbar strip is designed for (and tested on) the Windows 11 taskbar.
+- An iPhone on iOS 17 or later (tested on iPhone 18 Pro / iOS 27.0.1).
+- Developer Mode is only needed for CPU / memory; battery, power and charging insights work without it.
+
+### Run from source / build
+
+```bash
+pip install -r requirements.txt
+```
+
+Run `start.bat` (no console window). `build_exe.bat` builds `dist\iPhoneMonitor\iPhoneMonitor.exe` and `dist\iPhoneMonitor.zip` in a dedicated `.build-venv`. Pushing a `v*` tag makes GitHub Actions build and publish a release.
+
+## How it works
+
+| Data | Source |
+|---|---|
+| Battery, power, charger, health | `diagnostics_relay` IORegistry (`IOPMPowerSource`) over usbmux — no developer mode |
+| CPU, memory, processes | Instruments `sysmontap` over an in-process userspace tunnel (iOS 17+), developer disk image mounted |
+| Taskbar layout | Windows UI Automation (Windows 11 taskbar buttons are XAML) |
+| Bluetooth audio | `Windows.Media.Audio.AudioPlaybackConnection` |
+
+Built on [pymobiledevice3](https://github.com/doronz88/pymobiledevice3). Two of its defaults were tuned for continuous monitoring: the `sysmontap` output rate (1 ms → sampling interval, which cut `DTServiceHub` on the phone from ~20% to ~1% of a core) and the userspace tunnel's delayed-ACK timer once streaming starts (1 ms → 100 ms, ~6% → ~1% of a core on the PC).
+
+## Privacy
+
+Everything stays on your PC; there is no telemetry. The only network access is downloading the developer disk image from [doronz88/DeveloperDiskImage](https://github.com/doronz88/DeveloperDiskImage) and having it personalized by Apple's signing server — the same thing Xcode does — and only if you enable CPU / memory monitoring.
+
+## License
+
+[GPL-3.0-or-later](LICENSE). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for bundled components.
+
+iPhone, iOS and MagSafe are trademarks of Apple Inc. This project is not affiliated with Apple.
