@@ -5,10 +5,11 @@ import ctypes.wintypes
 import winreg
 from typing import Optional
 
+from i18n import lang, tr
 from monitor import Snapshot
 
 LOW_BATTERY = 20
-FONT_UI = "Microsoft YaHei UI"  # 中文界面字体
+FONT_UI = "Segoe UI" if lang() == "en" else "Microsoft YaHei UI"
 FONT_NUM = "Segoe UI Semibold"  # 大号数字
 
 
@@ -64,29 +65,34 @@ def charge_state(s: Snapshot) -> str:
     if not s.connected:
         return s.status
     if s.fully_charged:
-        return "已充满"
+        return tr("已充满")
     if s.charging:
-        return "充电中"
+        return tr("充电中")
     if s.external_power:
-        return "已接电源 · 暂停充电"
-    return "使用电池"
+        return tr("已接电源 · 暂停充电")
+    return tr("使用电池")
 
 
 def format_minutes(minutes: float) -> str:
     if minutes < 1:
-        return "不到 1 分钟"
+        return tr("不到 1 分钟")
     if minutes < 60:
-        return f"{minutes:.0f} 分钟"
-    return f"{int(minutes // 60)} 小时 {int(minutes % 60)} 分钟"
+        return tr("{m} 分钟", m=f"{minutes:.0f}")
+    return tr("{h} 小时 {m} 分钟", h=int(minutes // 60), m=int(minutes % 60))
+
+
+def adapter_label(adapter: str) -> str:
+    """充电器类型，去掉「（5V/3A）」这类括号；「USB 主机」等中文名按当前语言显示。"""
+    return tr(adapter.split("（")[0])
 
 
 def power_source(s: Snapshot) -> str:
     if not s.external_power:
-        return "未接电源"
-    kind = "无线 / MagSafe" if s.wireless else "有线"
+        return tr("未接电源")
+    kind = tr("无线 / MagSafe") if s.wireless else tr("有线")
     parts = [kind]
     if s.adapter:
-        parts.append(s.adapter.split("（")[0])
+        parts.append(adapter_label(s.adapter))
     if s.adapter_watts:
         parts.append(f"{s.adapter_watts} W")
     return " · ".join(parts)

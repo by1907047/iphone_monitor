@@ -4,12 +4,15 @@ import time
 import tkinter as tk
 from typing import Optional
 
+from i18n import tr
 from insights import ChargeInsight, device_key, load_health, load_sessions
 from monitor import Snapshot
+from ui_common import FONT_UI, adapter_label
 
-FONT = "Microsoft YaHei UI"
+FONT = FONT_UI
 MAX_SESSIONS = 10
-COLUMNS = [("时间", 11), ("电量", 9), ("时长", 8), ("充入", 7), ("平均/峰值", 11), ("电源", 14)]
+COLUMNS = [(tr("时间"), 11), (tr("电量"), 9), (tr("时长"), 8), (tr("充入", "column"), 7), (tr("平均/峰值"), 11),
+           (tr("电源"), 14)]
 
 
 class HistoryWindow:
@@ -34,14 +37,14 @@ class HistoryWindow:
     def _build(self) -> None:
         p, sc = self.p, self.scale
         win = tk.Toplevel(self.root)
-        win.title("电池历史")
+        win.title(tr("电池历史"))
         win.configure(bg=p.bg)
         win.resizable(False, False)
         win.protocol("WM_DELETE_WINDOW", win.withdraw)
         win.bind("<Escape>", lambda _e: win.withdraw())
         pad = int(12 * sc)
 
-        tk.Label(win, text="电池健康趋势", font=(FONT, 10, "bold"), bg=p.bg, fg=p.fg, anchor="w").pack(
+        tk.Label(win, text=tr("电池健康趋势"), font=(FONT, 10, "bold"), bg=p.bg, fg=p.fg, anchor="w").pack(
             fill="x", padx=pad, pady=(pad, 0))
         self.health_summary = tk.Label(win, font=(FONT, 8), bg=p.bg, fg=p.muted, anchor="w", justify="left")
         self.health_summary.pack(fill="x", padx=pad)
@@ -50,7 +53,7 @@ class HistoryWindow:
                                highlightthickness=1, highlightbackground=p.line)
         self.chart.pack(padx=pad, pady=(int(6 * sc), 0))
 
-        tk.Label(win, text=f"充电记录（最近 {MAX_SESSIONS} 次）", font=(FONT, 10, "bold"), bg=p.bg, fg=p.fg,
+        tk.Label(win, text=tr("充电记录（最近 {n} 次）", n=MAX_SESSIONS), font=(FONT, 10, "bold"), bg=p.bg, fg=p.fg,
                  anchor="w").pack(fill="x", padx=pad, pady=(int(10 * sc), int(3 * sc)))
         self.table = tk.Frame(win, bg=p.card, highlightthickness=1, highlightbackground=p.line)
         self.table.pack(fill="x", padx=pad, pady=(0, pad))
@@ -71,16 +74,17 @@ class HistoryWindow:
                 continue
         if points:
             first, last = points[0], points[-1]
-            text = f"已记录 {len(points)} 天：{first[0]} {first[1]:.1f}% → {last[0]} {last[1]:.1f}%"
+            text = tr("已记录 {n} 天：{d0} {h0}% → {d1} {h1}%", n=len(points), d0=first[0], h0=f"{first[1]:.1f}",
+                      d1=last[0], h1=f"{last[1]:.1f}")
             if first[2] and last[2]:
-                text += f"，循环 {first[2]} → {last[2]} 次"
-            text += "（新电池超过 100% 属正常）"
+                text += tr("，循环 {c0} → {c1} 次", c0=first[2], c1=last[2])
+            text += tr("（新电池超过 100% 属正常）")
         else:
-            text = "还没有记录。手机连着时每天自动记一次。"
+            text = tr("还没有记录。手机连着时每天自动记一次。")
         self.health_summary.config(text=text, wraplength=self.chart_w)
 
         if len(points) < 2:
-            c.create_text(self.chart_w / 2, self.chart_h / 2, text="记满 2 天后显示趋势", fill=p.muted, font=(FONT, 9))
+            c.create_text(self.chart_w / 2, self.chart_h / 2, text=tr("记满 2 天后显示趋势"), fill=p.muted, font=(FONT, 9))
             return
         values = [v for _, v, _ in points]
         lo, hi = min(values) - 0.5, max(values) + 0.5
@@ -113,13 +117,13 @@ class HistoryWindow:
             tk.Label(self.table, text=title, font=small, bg=p.card, fg=p.muted, width=width, anchor="w").grid(
                 row=0, column=col, sticky="w", padx=(int(8 * sc) if col == 0 else 0, 0), pady=(int(4 * sc), 0))
         if not sessions:
-            tk.Label(self.table, text="还没有充电记录。插着线充一次电后会出现在这里。", font=small, bg=p.card,
+            tk.Label(self.table, text=tr("还没有充电记录。插着线充一次电后会出现在这里。"), font=small, bg=p.card,
                      fg=p.muted, anchor="w").grid(row=1, column=0, columnspan=len(COLUMNS), sticky="w",
                                                    padx=int(8 * sc), pady=int(6 * sc))
             return
         for row, r in enumerate(sessions, start=1):
             minutes = (r["end"] - r["start"]) / 60
-            duration = f"{minutes:.0f} 分钟" if minutes < 60 else f"{minutes / 60:.1f} 小时"
+            duration = tr("{m} 分钟", m=f"{minutes:.0f}") if minutes < 60 else tr("{h} 小时", h=f"{minutes / 60:.1f}")
             pct = f"{r['start_pct']}→{r['end_pct']}%"
             if r.get("partial"):
                 pct = "…" + pct  # 程序启动前就插着线，开头没记到
@@ -127,7 +131,7 @@ class HistoryWindow:
             if r.get("avg_w"):
                 power = f"{r['avg_w']:.1f} / {r['peak_w']:.1f} W"
             # 「USB-C PD（5V/3A）」在表格里太长，只留类型
-            source = "无线" if r.get("wireless") else (r.get("adapter") or "有线").split("（")[0]
+            source = tr("无线") if r.get("wireless") else adapter_label(r.get("adapter") or "有线")
             if r.get("adapter_w"):
                 source += f" {r['adapter_w']} W"
             values = [time.strftime("%m-%d %H:%M", time.localtime(r["start"])), pct, duration,

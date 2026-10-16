@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
+from i18n import tr
 from monitor import Snapshot
 
 log = logging.getLogger(__name__)
@@ -146,15 +147,15 @@ class Insights:
         draining = s.battery_w is not None and s.battery_w < -DRAIN_W
 
         if not s.external_power:
-            state = "使用电池"
+            state = tr("使用电池")
         elif s.fully_charged or s.percent >= 100:
-            state = "已充满"
+            state = tr("已充满")
         elif at_limit:
-            state = f"已到上限 {limit}%"
+            state = tr("已到上限 {limit}%", limit=limit)
         elif s.charging:
-            state = "充电中"
+            state = tr("充电中")
         else:
-            state = "已接电源 · 暂停充电"
+            state = tr("已接电源 · 暂停充电")
 
         eta = None
         if s.charging and s.percent < target and self.ema_ma and self.ema_ma > 50 and s.full_mah:
@@ -169,12 +170,13 @@ class Insights:
                             and s.power_in_w + SUPPLY_MARGIN_W < s.system_load_w)
             if at_limit and not short_supply:
                 # 到上限后 iPhone 会暂时改用电池供电、掉一点再补，属正常
-                diagnosis, level = "到上限，暂由电池供电（正常）", "info"
+                diagnosis, level = tr("到上限，暂由电池供电（正常）"), "info"
                 self.drain_since = None
             else:
                 self.drain_since = self.drain_since or now
                 reasons = self._reasons(s, tether, cpu_pct)
-                diagnosis = "插电仍掉电" + (f"：{' · '.join(reasons)}" if reasons else "")
+                diagnosis = (tr("插电仍掉电：{reasons}", reasons=" · ".join(reasons)) if reasons
+                             else tr("插电仍掉电"))
                 level = "warn"
                 if now - self.drain_since >= DRAIN_ALERT_AFTER:
                     alert = "drain"
@@ -185,7 +187,9 @@ class Insights:
             if slow:
                 self.slow_since = self.slow_since or now
                 reasons = self._reasons(s, tether, cpu_pct)
-                diagnosis = f"充电慢 {s.battery_w:.1f} W" + (f"：{' · '.join(reasons)}" if reasons else "")
+                w = f"{s.battery_w:.1f}"
+                diagnosis = (tr("充电慢 {w} W：{reasons}", w=w, reasons=" · ".join(reasons)) if reasons
+                             else tr("充电慢 {w} W", w=w))
                 level = "warn"
                 if now - self.slow_since >= SLOW_ALERT_AFTER:
                     alert = "slow"
@@ -198,21 +202,22 @@ class Insights:
         """简短原因，按重要程度排，最多两条。"""
         reasons = []
         if s.power_in_w is not None and s.system_load_w is not None and s.power_in_w < s.system_load_w:
-            reasons.append(f"供电 {s.power_in_w:.1f} W < 耗电 {s.system_load_w:.1f} W")
+            reasons.append(tr("供电 {inp} W < 耗电 {load} W", inp=f"{s.power_in_w:.1f}",
+                              load=f"{s.system_load_w:.1f}"))
         est = self.supply.estimate()
         if est and est.source_v < LOW_SOURCE_V:
-            reasons.append(f"电源电压偏低（约 {est.source_v:.2f} V）")
+            reasons.append(tr("电源电压偏低（约 {v} V）", v=f"{est.source_v:.2f}"))
         elif est and est.line_ohm >= HIGH_LINE_OHM:
-            reasons.append(f"线路电阻大（约 {est.line_ohm:.2f} Ω）")
+            reasons.append(tr("线路电阻大（约 {r} Ω）", r=f"{est.line_ohm:.2f}"))
         elif (s.input_voltage_v and s.adapter_voltage_v and not s.wireless
                 and s.adapter_voltage_v - s.input_voltage_v >= VOLTAGE_SAG_V):
-            reasons.append(f"线材压降（仅 {s.input_voltage_v:.2f} V）")
+            reasons.append(tr("线材压降（仅 {v} V）", v=f"{s.input_voltage_v:.2f}"))
         if s.adapter_watts and s.adapter_watts <= LOW_PORT_W and not s.wireless:
-            reasons.append(f"电源仅 {s.adapter_watts} W")
+            reasons.append(tr("电源仅 {w} W", w=s.adapter_watts))
         if tether:
-            reasons.append("开着热点")
+            reasons.append(tr("开着热点"))
         if cpu_pct is not None and cpu_pct >= HIGH_LOAD_CPU:
-            reasons.append(f"负载高 {cpu_pct:.0f}%")
+            reasons.append(tr("负载高 {pct}%", pct=f"{cpu_pct:.0f}"))
         return reasons[:2]
 
     def _update_current(self, s: Snapshot, dt: float) -> None:

@@ -18,6 +18,7 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import Callable, Optional
 
+from i18n import tr
 from insights import ChargeInsight
 from monitor import DevStats, Monitor, Snapshot
 from ui_common import (
@@ -58,7 +59,7 @@ class DetailWindow:
         self.width = int(CONTENT_DIP * sc)
         self.pad = int(12 * sc)
 
-        root.title("iPhone 状态")  # 版本号由 App 追加
+        root.title(tr("iPhone 状态"))  # 版本号由 App 追加
         root.configure(bg=p.bg)
         root.resizable(False, False)
         root.protocol("WM_DELETE_WINDOW", self.hide)
@@ -146,8 +147,8 @@ class DetailWindow:
         row = tk.Frame(self.root, bg=p.bg)
         row.pack(fill="x", padx=self.pad - half, pady=(self.d(8), 0))
         self.tiles: dict[str, tuple[tk.Label, tk.Label]] = {}
-        for col, (key, title) in enumerate((("load", "整机耗电"), ("input", "外部供电"),
-                                            ("battery", "电池"), ("stats", "CPU · 内存"))):
+        for col, (key, title) in enumerate((("load", tr("整机耗电")), ("input", tr("外部供电")),
+                                            ("battery", tr("电池")), ("stats", tr("CPU · 内存")))):
             card = self._card(row)
             card.grid(row=0, column=col, sticky="nsew", padx=half)
             row.grid_columnconfigure(col, weight=1, uniform="tiles")
@@ -163,9 +164,9 @@ class DetailWindow:
         p = self.p
         head = tk.Frame(self.root, bg=p.bg)
         head.pack(fill="x", padx=self.pad, pady=(self.d(8), self.d(3)))
-        self._label(head, "近 10 分钟", size=9, bold=True).pack(side="left")
+        self._label(head, tr("近 10 分钟"), size=9, bold=True).pack(side="left")
         self.mode_buttons: dict[str, tk.Label] = {}
-        for mode, text in (("power", "功率"), ("stats", "CPU / 内存")):
+        for mode, text in (("power", tr("功率")), ("stats", tr("CPU / 内存"))):
             btn = self._label(head, text, size=8, padx=self.d(6), pady=0, cursor="hand2")
             btn.pack(side="left", padx=(self.d(6) if mode == "power" else self.d(2), 0))
             btn.bind("<Button-1>", lambda _e, m=mode: self.set_chart_mode(m))
@@ -185,10 +186,10 @@ class DetailWindow:
         self.details: dict[str, tk.Label] = {}
         self.detail_rows: dict[str, tuple[tk.Label, tk.Label]] = {}
         # 每行左右各一项：左边电源相关，右边电池与存储
-        rows = ((("source", "充电器"), ("health", "健康度")),
-                (("supply", "电源电压"), ("capacity", "容量")),
-                (("line", "线路电阻"), ("disk", "存储")),
-                (("bt", "声音转电脑"), ("temp", "温度")))
+        rows = ((("source", tr("充电器")), ("health", tr("健康度"))),
+                (("supply", tr("电源电压")), ("capacity", tr("容量"))),
+                (("line", tr("线路电阻")), ("disk", tr("存储"))),
+                (("bt", tr("声音转电脑")), ("temp", tr("温度"))))
         wrap = self.width // 2 - self.d(64)
         for r, pair in enumerate(rows):
             pady = (self.d(5) if r == 0 else self.d(1), self.d(5) if r == len(rows) - 1 else self.d(1))
@@ -207,7 +208,7 @@ class DetailWindow:
         p = self.p
         head = tk.Frame(self.root, bg=p.bg)
         head.pack(fill="x", padx=self.pad, pady=(self.d(8), self.d(3)))
-        self._label(head, "占用最高的进程", size=9, bold=True).pack(side="left")
+        self._label(head, tr("占用最高的进程"), size=9, bold=True).pack(side="left")
         self.proc_note = self._label(head, "", size=8, color=p.muted)
         self.proc_note.pack(side="right")
         card = self._card(self.root)
@@ -234,8 +235,8 @@ class DetailWindow:
         footer.pack(fill="x", padx=self.pad, pady=(self.d(8), self.pad))
         self.updated_label = self._label(footer, "", size=8, color=p.muted)
         self.updated_label.pack(side="left")
-        for text, command in (("刷新", self.monitor.refresh_now),
-                              ("电池历史", lambda: self.on_history and self.on_history())):
+        for text, command in ((tr("刷新"), self.monitor.refresh_now),
+                              (tr("电池历史"), lambda: self.on_history and self.on_history())):
             btn = tk.Label(footer, text=text, font=(FONT_UI, 8), bg=p.card, fg=p.fg, padx=self.d(8),
                            pady=self.d(2), cursor="hand2", highlightthickness=1, highlightbackground=p.line)
             btn.pack(side="right", padx=(self.d(6), 0))
@@ -299,8 +300,8 @@ class DetailWindow:
         """「仅 USB」开关已移到右键菜单，这里保留接口以兼容。"""
 
     def set_tether(self, ip: Optional[str]) -> None:
-        text = (f"电脑正通过 USB 使用手机个人热点（{ip}），单位内网可能打不开。"
-                "关闭 iPhone「设置 → 个人热点 → 允许其他人加入」即可。") if ip else ""
+        text = tr("电脑正通过 USB 使用手机个人热点（{ip}），单位内网可能打不开。"
+                  "关闭 iPhone「设置 → 个人热点 → 允许其他人加入」即可。", ip=ip) if ip else ""
         self._show_banner(self.tether_banner, text, "danger")
 
     def set_bt(self, text: str, connected: bool) -> None:
@@ -319,8 +320,8 @@ class DetailWindow:
                        highlightthickness=1 if active else 0, highlightbackground=p.line)
         for child in self.legend.winfo_children():
             child.destroy()
-        legend = ((("整机耗电", p.orange), ("电池", p.green)) if self.chart_mode == "power"
-                  else (("CPU", p.blue), ("内存", p.purple)))
+        legend = (((tr("整机耗电"), p.orange), (tr("电池"), p.green)) if self.chart_mode == "power"
+                  else (("CPU", p.blue), (tr("内存"), p.purple)))
         for name, color in legend:
             self._label(self.legend, f"● {name}", size=8, color=color).pack(side="left", padx=(self.d(8), 0))
 
@@ -331,9 +332,9 @@ class DetailWindow:
         self.name_label.config(text=s.name or "iPhone")
         self.sub_label.config(text=" · ".join(x for x in (s.model, f"iOS {s.ios}" if s.ios else "") if x) or " ")
         if s.connected:
-            self.status_pill.config(text=f"● 已连接 · {s.connection}", bg=p.ok_bg, fg=p.ok_fg)
+            self.status_pill.config(text=tr("● 已连接 · {conn}", conn=s.connection), bg=p.ok_bg, fg=p.ok_fg)
         else:
-            self.status_pill.config(text="● " + (s.status or "未连接")[:14], bg=p.warn_bg, fg=p.warn_fg)
+            self.status_pill.config(text="● " + (s.status or tr("未连接"))[:30], bg=p.warn_bg, fg=p.warn_fg)
 
         # 电量 + 电池条
         if s.connected and s.percent is not None:
@@ -343,11 +344,11 @@ class DetailWindow:
         else:
             self.pct_label.config(text="--", fg=p.muted)
         self._draw_battery_bar(s)
-        state = (ins.state or charge_state(s)) if s.connected else (s.status or "未连接")
+        state = (ins.state or charge_state(s)) if s.connected else (s.status or tr("未连接"))
         self.state_label.config(text=state)
         parts = []
         if ins.eta_minutes is not None:
-            parts.append(f"约 {format_minutes(ins.eta_minutes)}到 {ins.eta_target}%")
+            parts.append(tr("约 {time}到 {pct}%", time=format_minutes(ins.eta_minutes), pct=ins.eta_target))
         if s.connected:
             parts.append(power_source(s))
         self.detail_label.config(text=" · ".join(parts))
@@ -358,21 +359,22 @@ class DetailWindow:
 
         # 数字卡
         self._tile("load", fmt(s.system_load_w, "W"),
-                   "手机此刻用电" if s.system_load_measured else ("按放电估算" if s.system_load_w is not None else ""))
+                   tr("手机此刻用电") if s.system_load_measured else (
+                       tr("按放电估算") if s.system_load_w is not None else ""))
         if s.connected and s.external_power:
             sub = (f"{s.input_voltage_v:.2f} V × {s.input_current_a:.2f} A"
                    if s.input_voltage_v and s.input_current_a is not None else "")
             self._tile("input", fmt(s.power_in_w, "W"), sub)
         else:
-            self._tile("input", "—", "未接电源" if s.connected else "")
+            self._tile("input", "—", tr("未接电源") if s.connected else "")
         if s.battery_w is None or not s.connected:
             self._tile("battery", "—", "")
         elif abs(s.battery_w) < 0.05:
-            self._tile("battery", "0.0 W", "不充不放")
+            self._tile("battery", "0.0 W", tr("不充不放"))
         elif s.battery_w > 0:
-            self._tile("battery", fmt(s.battery_w, "W", signed=True), "充入", p.green)
+            self._tile("battery", fmt(s.battery_w, "W", signed=True), tr("充入"), p.green)
         else:
-            self._tile("battery", fmt(s.battery_w, "W", signed=True), "放电", p.red)
+            self._tile("battery", fmt(s.battery_w, "W", signed=True), tr("放电"), p.red)
 
         # 明细：电源
         dt = self.details
@@ -380,14 +382,14 @@ class DetailWindow:
         est = ins.supply
         if est:
             low = est.source_v < 4.75
-            dt["supply"].config(text=f"约 {est.source_v:.2f} V" + ("，偏低" if low else "，正常"),
+            dt["supply"].config(text=tr("约 {v} V，偏低" if low else "约 {v} V，正常", v=f"{est.source_v:.2f}"),
                                 fg=p.orange if low else p.fg)
             high = est.line_ohm >= 0.2
-            dt["line"].config(text=f"约 {est.line_ohm:.2f} Ω" + ("，偏大" if high else "，正常"),
+            dt["line"].config(text=tr("约 {r} Ω，偏大" if high else "约 {r} Ω，正常", r=f"{est.line_ohm:.2f}"),
                               fg=p.orange if high else p.fg)
         elif s.connected and s.external_power and s.input_voltage_v:
-            dt["supply"].config(text=f"手机端 {s.input_voltage_v:.2f} V", fg=p.fg)
-            dt["line"].config(text="收集数据中…", fg=p.muted)
+            dt["supply"].config(text=tr("手机端 {v} V", v=f"{s.input_voltage_v:.2f}"), fg=p.fg)
+            dt["line"].config(text=tr("收集数据中…"), fg=p.muted)
         else:
             dt["supply"].config(text="—", fg=p.fg)
             dt["line"].config(text="—", fg=p.fg)
@@ -395,7 +397,7 @@ class DetailWindow:
         # 明细：电池与存储
         health = "—"
         if s.health_pct is not None:
-            health = f"{s.health_pct:.1f}%" + (f" · 循环 {s.cycle_count} 次" if s.cycle_count else "")
+            health = f"{s.health_pct:.1f}%" + (tr(" · 循环 {n} 次", n=s.cycle_count) if s.cycle_count else "")
         dt["health"].config(text=health)
         cap = "—"
         if s.remaining_mah and s.full_mah:
@@ -406,12 +408,12 @@ class DetailWindow:
             dt["temp"].config(text=fmt(s.temperature_c, "°C"))
         disk = "—"
         if s.disk_total:
-            free = f"剩 {s.disk_free / 1e9:.0f} / " if s.disk_free is not None else ""
+            free = tr("剩 {free} / ", free=f"{s.disk_free / 1e9:.0f}") if s.disk_free is not None else ""
             disk = f"{free}{s.disk_total / 1e9:.0f} GB"
         dt["disk"].config(text=disk)
 
         if s.timestamp:
-            self.updated_label.config(text="更新于 " + time.strftime("%H:%M:%S", time.localtime(s.timestamp)))
+            self.updated_label.config(text=tr("更新于 {t}", t=time.strftime("%H:%M:%S", time.localtime(s.timestamp))))
         if self.chart_mode == "power":
             self.draw_chart()
 
@@ -424,15 +426,15 @@ class DetailWindow:
             sub = (f"{dv.mem_used / 2**30:.1f} / {dv.mem_total / 2**30:.1f} GB" if mem_pct is not None else "")
             self._tile("stats", value, sub, p.red if dv.cpu_pct >= 80 else None)
         else:
-            self._tile("stats", "—", dv.status[:16] if dv.status else "")
+            self._tile("stats", "—", dv.status[:24] if dv.status else "")
 
         rows = list(dv.top)[:TOP_N] if dv.active else []
         if rows:
             self.proc_empty.grid_forget()
-            self.proc_note.config(text=f"共 {dv.process_count} 个进程" if dv.process_count else "")
+            self.proc_note.config(text=tr("共 {n} 个进程", n=dv.process_count) if dv.process_count else "")
         else:
             self.proc_note.config(text="")
-            self.proc_empty.config(text=dv.status or "打开后读取")
+            self.proc_empty.config(text=dv.status or tr("打开后读取"))
             self.proc_empty.grid(row=0, column=0, columnspan=4, sticky="w", padx=self.d(8), pady=self.d(5))
         top_cpu = max([r[1] for r in rows] + [1.0])
         for i, (name_l, bar, cpu_l, mem_l) in enumerate(self.proc_rows):
@@ -443,7 +445,7 @@ class DetailWindow:
                 continue
             name, cpu, mem = rows[i]
             own = name in OWN_PROCESSES
-            name_l.config(text=f"{name[:18]}" + ("（监测）" if own else ""), fg=p.muted if own else p.fg)
+            name_l.config(text=f"{name[:18]}" + (tr("（监测）") if own else ""), fg=p.muted if own else p.fg)
             bar.create_rectangle(0, 0, self.proc_bar_w, self.d(5), fill=p.track, width=0)
             bar.create_rectangle(0, 0, max(2, self.proc_bar_w * min(cpu, top_cpu) / top_cpu), self.d(5),
                                  fill=p.muted if own else p.blue, width=0)
@@ -496,7 +498,7 @@ class DetailWindow:
         now = time.time()
         values = [v for series in (first, second) for _, v in series if v is not None]
         if not values:
-            c.create_text(w / 2, h / 2, text="暂无数据", fill=p.muted, font=(FONT_UI, 9))
+            c.create_text(w / 2, h / 2, text=tr("暂无数据"), fill=p.muted, font=(FONT_UI, 9))
             return
         if fixed:
             lo, hi = fixed

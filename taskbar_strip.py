@@ -17,6 +17,8 @@ from typing import Callable, Optional
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
+from i18n import tr
+
 log = logging.getLogger(__name__)
 
 user32 = ctypes.windll.user32
@@ -449,7 +451,7 @@ class TaskbarStrip:
         if not connected or percent is None:
             icon_color, bolt = colors["muted"], None
             pct_text, pct_color, power_text = "--", colors["muted"], ""
-            line2, line2_color = "未连接", colors["muted"]
+            line2, line2_color = tr("未连接"), colors["muted"]
         else:
             # 电池在放电（插着线也可能放电）时图标整体变红；否则充电绿色闪电、插电暂停充电灰色闪电
             if discharging:
@@ -468,7 +470,7 @@ class TaskbarStrip:
             elif show_stats:
                 cpu = f"{cpu_pct:.0f}%" if cpu_pct is not None else "…"
                 mem = f"{mem_pct:.0f}%" if mem_pct is not None else "…"
-                line2, line2_color = f"{cpu} · 内存 {mem}", colors["muted"]
+                line2, line2_color = tr("{cpu} · 内存 {mem}", cpu=cpu, mem=mem), colors["muted"]
             else:
                 line2, line2_color = "", colors["muted"]
             if width < round(WIDTH_DIP * s) - 2:

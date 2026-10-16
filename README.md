@@ -4,9 +4,9 @@ English | [简体中文](README.zh-CN.md)
 
 A lightweight Windows taskbar tool that shows a USB-connected iPhone's **battery, power draw, CPU and memory** in real time, and helps you figure out *why your iPhone is still draining while plugged in*. No jailbreak, nothing to install on the phone.
 
-![Taskbar strip: charging / at charge limit / draining while plugged in, in light, dark and compact layouts](docs/images/taskbar-strip.png)
+![Taskbar strip: charging / at charge limit / draining while plugged in, in light, dark and compact layouts](docs/images/taskbar-strip-en.png)
 
-> The UI is currently in Simplified Chinese.
+> The UI is available in **English** and **Simplified Chinese**. It follows the Windows display language; switch it from the right-click menu → **语言 / Language**.
 
 ## Features
 
@@ -19,10 +19,10 @@ A lightweight Windows taskbar tool that shows a USB-connected iPhone's **battery
 - **Lightweight**: about 0.1% of one core on the PC with the window closed; monitoring itself costs about 1–2% of one core on the phone.
 
 <p>
-<img src="docs/images/details.png" width="400" alt="Details window">
-<img src="docs/images/details-dark.png" width="400" alt="Details window (dark)">
+<img src="docs/images/details-en.png" width="400" alt="Details window">
+<img src="docs/images/details-dark-en.png" width="400" alt="Details window (dark)">
 </p>
-<img src="docs/images/history.png" width="400" alt="Battery history">
+<img src="docs/images/history-en.png" width="400" alt="Battery history">
 
 ## Getting started
 

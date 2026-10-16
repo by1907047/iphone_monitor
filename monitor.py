@@ -18,6 +18,8 @@ from typing import Any, Optional
 from pymobiledevice3.lockdown import create_using_usbmux
 from pymobiledevice3.services.diagnostics import DiagnosticsService
 
+from i18n import tr
+
 log = logging.getLogger(__name__)
 
 # 打包成 exe 后程序目录可能不可写（比如放在 Program Files），日志和调试数据统一放到 %APPDATA%
@@ -45,7 +47,7 @@ ADAPTER_NAMES = {"pd charger": "USB-C PD", "usb host": "USB 主机", "usb charge
 @dataclass(frozen=True)
 class Snapshot:
     connected: bool = False
-    status: str = "正在连接…"
+    status: str = tr("正在连接…")
     timestamp: float = 0.0
 
     name: str = ""
@@ -198,28 +200,28 @@ def friendly_error(exc: BaseException) -> str:
     text = f"{type(exc).__name__}: {exc}"
     lowered = text.lower()
     if "usbmuxd" in lowered or "connectionrefused" in lowered or "10061" in lowered:
-        return "未找到 Apple 设备服务（需安装 Apple Devices 或 iTunes）"
+        return tr("未找到 Apple 设备服务（需安装 Apple Devices 或 iTunes）")
     if "nodevice" in lowered or "no device" in lowered or "device not found" in lowered:
         # 手机重启或开关个人热点后 USB 会重新枚举，Apple 服务有时认不回来，拔插一次就好
-        return "未检测到 iPhone：请插线；已插线就拔插一次数据线"
+        return tr("未检测到 iPhone：请插线；已插线就拔插一次数据线")
     if "pair" in lowered or "trust" in lowered or "passwordprotected" in lowered:
-        return "请解锁 iPhone 并点「信任此电脑」"
+        return tr("请解锁 iPhone 并点「信任此电脑」")
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
-        return "读取超时，正在重连…"
-    return "连接中断，正在重连…"
+        return tr("读取超时，正在重连…")
+    return tr("连接中断，正在重连…")
 
 
 def friendly_dev_error(exc: BaseException) -> str:
     text = f"{type(exc).__name__}: {exc}".lower()
     if "developermode" in text or "developer mode" in text:
-        return "需在 iPhone 上开启开发者模式"
+        return tr("需在 iPhone 上开启开发者模式")
     if "mount timeout" in text:
-        return "挂载镜像超时：请解锁 iPhone，稍后自动重试"
+        return tr("挂载镜像超时：请解锁 iPhone，稍后自动重试")
     if "tss" in text or "github" in text:
-        return "开发者镜像下载/签名失败，稍后重试"
+        return tr("开发者镜像下载/签名失败，稍后重试")
     if "userspacetunnelunavailable" in text or "coredeviceproxy" in text:
-        return "需用 USB 线连接（Wi-Fi 下不支持）"
-    return "开发者通道断开，正在重连…"
+        return tr("需用 USB 线连接（Wi-Fi 下不支持）")
+    return tr("开发者通道断开，正在重连…")
 
 
 class Monitor:
@@ -241,7 +243,7 @@ class Monitor:
         self._history_seconds = history_seconds
         self._lock = threading.Lock()
         self._snapshot = Snapshot()
-        self._dev = DevStats(status="等待连接…")
+        self._dev = DevStats(status=tr("等待连接…"))
         self._history: deque[tuple[float, Optional[float], Optional[float], Optional[int], Optional[float]]] = deque()
         self._dev_history: deque[tuple[float, Optional[float], Optional[float]]] = deque()
         self._stop = threading.Event()
@@ -378,24 +380,24 @@ class Monitor:
         backoff = 5.0
         while not self._stop.is_set():
             if not self.dev_enabled:
-                self._set_dev(active=False, status="已关闭")
+                self._set_dev(active=False, status=tr("已关闭"))
                 await self._wait(60, self._dev_ev)
                 continue
             if not self._dev_wanted():
-                self._set_dev(active=False, status="待机（打开详情窗口时读取）")
+                self._set_dev(active=False, status=tr("待机（打开详情窗口时读取）"))
                 await self._wait(60, self._dev_ev)
                 continue
             snap = self.snapshot()
             if not snap.connected:
-                self._set_dev(active=False, status="等待连接…")
+                self._set_dev(active=False, status=tr("等待连接…"))
                 await self._sleep(2, wakeable=False)
                 continue
             if snap.connection == "Wi-Fi":
-                self._set_dev(active=False, status="需用 USB 线连接（Wi-Fi 下不支持）")
+                self._set_dev(active=False, status=tr("需用 USB 线连接（Wi-Fi 下不支持）"))
                 await self._sleep(5, wakeable=False)
                 continue
             try:
-                self._set_dev(status="正在建立开发者通道…")
+                self._set_dev(status=tr("正在建立开发者通道…"))
                 await self._dev_session()
                 backoff = 5.0
             except Exception as exc:  # noqa: BLE001 - 任何错误都转为重连
@@ -418,7 +420,7 @@ class Monitor:
             try:
                 if not await _ddi_installed(rsd):
                     # 手机锁屏时镜像服务不回应，会一直卡住，所以加超时并提示解锁
-                    self._set_dev(status="正在挂载开发者镜像（请保持手机解锁）…")
+                    self._set_dev(status=tr("正在挂载开发者镜像（请保持手机解锁）…"))
                     try:
                         await asyncio.wait_for(auto_mount(rsd), 180)
                     except asyncio.TimeoutError as exc:
@@ -450,7 +452,7 @@ class Monitor:
         proc_fields = list(tap.process_attributes_cls.__dataclass_fields__)
         sys_fields = list(tap.system_attributes_cls.__dataclass_fields__)
         async with tap as sysmon:
-            self._set_dev(status="正在读取…")
+            self._set_dev(status=tr("正在读取…"))
             system: dict[str, Any] = {}
             cpu: Optional[dict[str, Any]] = None
             seen_cpu = False
@@ -524,7 +526,7 @@ class Monitor:
                         disk_at = now
 
                     self._publish(
-                        Snapshot(connected=True, status="已连接", timestamp=now, **device, **disk, **parse_battery(raw))
+                        Snapshot(connected=True, status=tr("已连接"), timestamp=now, **device, **disk, **parse_battery(raw))
                     )
                     await self._sleep(self._poll_interval())
 
@@ -566,7 +568,7 @@ def parse_sysmon(system: dict[str, Any], cpu: dict[str, Any], procs: list[dict[s
     top = sorted(procs, key=lambda p: p.get("cpuUsage") or 0, reverse=True)[:6]
     return DevStats(
         active=True,
-        status="已连接",
+        status=tr("已连接"),
         timestamp=time.time(),
         cpu_pct=cpu_pct,
         cpu_cores=cores,

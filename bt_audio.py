@@ -9,6 +9,8 @@ import logging
 import threading
 from typing import Callable, Optional
 
+from i18n import tr
+
 log = logging.getLogger(__name__)
 
 RETRY_MIN, RETRY_MAX = 10.0, 60.0  # 连不上时的重试间隔（秒），逐步拉长
@@ -18,7 +20,7 @@ class BluetoothAudio:
     def __init__(self, preferred_name: Callable[[], str], enabled: bool = False) -> None:
         self.preferred_name = preferred_name  # 优先连这个名字的设备（手机名，如「My iPhone」）
         self._enabled = enabled
-        self.status = "已关闭"
+        self.status = tr("已关闭")
         self.device_name = ""
         self._conn = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -41,7 +43,7 @@ class BluetoothAudio:
 
     @property
     def connected(self) -> bool:
-        return self._conn is not None and self.status.startswith("已连接")
+        return self._conn is not None  # 只在连接打开后才赋值，断开时清空
 
     def _signal(self) -> None:
         if self._loop is not None and self._wake is not None:
@@ -56,7 +58,7 @@ class BluetoothAudio:
             asyncio.run(self._run())
         except Exception:  # noqa: BLE001
             log.exception("蓝牙音频线程退出")
-            self.status = "不可用（系统不支持）"
+            self.status = tr("不可用（系统不支持）")
 
     async def _wait(self, seconds: float) -> None:
         try:
@@ -79,7 +81,7 @@ class BluetoothAudio:
         while not self._stop:
             if not self._enabled:
                 self._close()
-                self.status = "已关闭"
+                self.status = tr("已关闭")
                 await self._wait(3600)
                 continue
             if self._conn is not None:
@@ -88,21 +90,21 @@ class BluetoothAudio:
                     continue
                 # 真的断开了（手机走远、关了蓝牙）：先等一会儿再重连，避免来回抖
                 self._close()
-                self.status = "连接已断开，稍后重连"
+                self.status = tr("连接已断开，稍后重连")
                 await self._wait(RETRY_MIN)
                 continue
             try:
                 devices = list(await DeviceInformation.find_all_async_aqs_filter(
                     AudioPlaybackConnection.get_device_selector()))
                 if not devices:
-                    self.status = "未找到已配对的手机（先在系统里配对蓝牙）"
+                    self.status = tr("未找到已配对的手机（先在系统里配对蓝牙）")
                     await self._wait(retry)
                     retry = min(retry * 2, RETRY_MAX)
                     continue
                 name = self.preferred_name() or ""
                 devices.sort(key=lambda d: 0 if name and name in d.name else 1)
                 device = devices[0]
-                self.status = f"正在连接 {device.name}…"
+                self.status = tr("正在连接 {name}…", name=device.name)
                 conn = AudioPlaybackConnection.try_create_from_id(device.id)
                 if conn is None:
                     raise RuntimeError("无法创建连接")
@@ -116,19 +118,19 @@ class BluetoothAudio:
                             break
                         await asyncio.sleep(0.1)
                     self._conn, self.device_name = conn, device.name
-                    self.status = f"已连接 {device.name}"
+                    self.status = tr("已连接 {name}", name=device.name)
                     log.info("蓝牙音频已连接：%s", device.name)
                     retry = RETRY_MIN
                     continue
                 conn.close()
                 reason = {
-                    AudioPlaybackConnectionOpenResultStatus.REQUEST_TIMED_OUT: "手机不在附近或蓝牙未开",
-                    AudioPlaybackConnectionOpenResultStatus.DENIED_BY_SYSTEM: "被系统拒绝",
-                }.get(result.status, "连接失败")
-                self.status = f"{reason}，稍后重试"
+                    AudioPlaybackConnectionOpenResultStatus.REQUEST_TIMED_OUT: tr("手机不在附近或蓝牙未开"),
+                    AudioPlaybackConnectionOpenResultStatus.DENIED_BY_SYSTEM: tr("被系统拒绝"),
+                }.get(result.status, tr("连接失败"))
+                self.status = tr("{reason}，稍后重试", reason=reason)
             except Exception as exc:  # noqa: BLE001 - 任何错误都稍后重试
                 log.info("蓝牙音频连接失败: %r", exc)
-                self.status = "连接失败，稍后重试"
+                self.status = tr("连接失败，稍后重试")
             await self._wait(retry)
             retry = min(retry * 2, RETRY_MAX)
         self._close()

@@ -11,6 +11,7 @@ import os
 import queue
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -23,6 +24,7 @@ from typing import Optional
 import pystray
 from PIL import Image, ImageDraw, ImageFont
 
+from i18n import LANGUAGES, tr
 from monitor import FROZEN, LOG_DIR, DevStats, Monitor, Snapshot
 from insights import CHARGE_LIMITS, ChargeInsight, Insights
 from bt_audio import BluetoothAudio
@@ -32,7 +34,7 @@ from taskbar_strip import TaskbarStrip
 from ui_common import charge_state, fmt
 
 APP_NAME = "iPhoneMonitor"
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 HERE = Path(__file__).resolve().parent
 SETTINGS_FILE = Path(os.environ.get("APPDATA", HERE)) / APP_NAME / "settings.json"
 DEFAULT_SETTINGS = {
@@ -43,7 +45,7 @@ DEFAULT_SETTINGS = {
     "strip_position": "right",  # 文字条优先放的一侧：right=托盘旁，left=任务栏左侧小组件旁
     "bt_audio": False,  # 手机声音通过蓝牙转到电脑播放
     "charge_limit": 100,  # 与 iPhone「设置 → 电池 → 充电」里的上限保持一致；100 表示不限
-
+    "language": "auto",  # auto（跟随 Windows 显示语言）/ zh / en
 }
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -73,9 +75,38 @@ def setup_logging() -> None:
 SHOW_EVENT = f"Local\\{APP_NAME}.Show"  # 再次启动时用它通知已在运行的实例打开详情窗口
 
 
+RESTART_ARG = "--restart"  # 切换语言后重启：新进程等旧进程退出再接手
+RESTART_WAIT_SECONDS = 15
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_kernel32.CreateMutexW.restype = ctypes.c_void_p
+_kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+_mutex: Optional[int] = None
+
+
 def single_instance() -> bool:
-    ctypes.windll.kernel32.CreateMutexW(None, False, f"Local\\{APP_NAME}")
-    return ctypes.windll.kernel32.GetLastError() != 183  # ERROR_ALREADY_EXISTS
+    global _mutex
+    handle = _kernel32.CreateMutexW(None, False, f"Local\\{APP_NAME}")
+    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+        _kernel32.CloseHandle(handle)  # 不关的话旧进程退出后互斥量也不会消失
+        return False
+    _mutex = handle
+    return True
+
+
+def wait_single_instance(seconds: float) -> bool:
+    deadline = time.time() + seconds
+    while not single_instance():
+        if time.time() > deadline:
+            return False
+        time.sleep(0.2)
+    return True
+
+
+def restart_command() -> list[str]:
+    if FROZEN:
+        return [sys.executable, RESTART_ARG]
+    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    return [str(pythonw if pythonw.exists() else sys.executable), str(HERE / "app.py"), RESTART_ARG]
 
 
 def signal_running_instance() -> None:
@@ -136,6 +167,9 @@ def set_autostart(enabled: bool) -> None:
 
 STRIP_HIDE_AFTER_SECONDS = 5
 STRIP_POSITIONS = (("right", "靠右（托盘旁）"), ("left", "靠左（小组件旁）"))
+# 语言菜单两种语言都写上，选错了语言也能找回来
+LANGUAGE_MENU = "语言 / Language"
+LANGUAGE_LABEL = {"auto": "跟随系统 / System default"}
 TICK_VISIBLE_MS = 500
 TICK_IDLE_MS = 1000
 TETHER_CHECK_SECONDS = 15
@@ -185,36 +219,36 @@ def strip_stats_note(d: DevStats) -> str:
     """CPU / 内存读不到时，文字条第二行显示的简短原因。"""
     if d.active:
         return ""
-    if "开发者模式" in d.status:
-        return "需开发者模式"
-    if "解锁" in d.status:
-        return "解锁手机读取"
-    if "USB" in d.status:
-        return "需 USB 连接"
+    if d.status == tr("需在 iPhone 上开启开发者模式"):
+        return tr("需开发者模式")
+    if d.status in (tr("挂载镜像超时：请解锁 iPhone，稍后自动重试"), tr("正在挂载开发者镜像（请保持手机解锁）…")):
+        return tr("解锁手机读取")
+    if d.status == tr("需用 USB 线连接（Wi-Fi 下不支持）"):
+        return tr("需 USB 连接")
     return ""
 
 
 def tooltip(s: Snapshot, d: DevStats, tether_ip: Optional[str] = None) -> str:
     text = _tooltip(s, d)
     if tether_ip:
-        text = "⚠ 手机热点正在接管电脑网络\n" + text
+        text = tr("⚠ 手机热点正在接管电脑网络") + "\n" + text
     return text[:127]
 
 
 def _tooltip(s: Snapshot, d: DevStats) -> str:
     if not s.connected:
         name = s.name or "iPhone"
-        return f"{name}：{s.status}"
-    battery = f"电池 {fmt(s.battery_w, 'W', signed=True)}"
+        return tr("{name}：{status}", name=name, status=s.status)
+    battery = tr("电池 {w}", w=fmt(s.battery_w, "W", signed=True))
     if s.temperature_c is not None:
         battery += f" · {fmt(s.temperature_c, '°C')}"
     lines = [f"{s.name} · {s.percent}% · {charge_state(s)}", battery]
     if s.system_load_w is not None:
-        lines.append(f"整机耗电 {fmt(s.system_load_w, 'W')}")
+        lines.append(tr("整机耗电 {w}", w=fmt(s.system_load_w, "W")))
     if d.active and d.cpu_pct is not None:
-        mem = f" · 内存 {d.mem_used * 100 / d.mem_total:.0f}%" if d.mem_used and d.mem_total else ""
+        mem = tr(" · 内存 {pct}%", pct=f"{d.mem_used * 100 / d.mem_total:.0f}") if d.mem_used and d.mem_total else ""
         lines.append(f"CPU {d.cpu_pct:.0f}%{mem}")
-    lines.append(f"连接：{s.connection}")
+    lines.append(tr("连接：{conn}", conn=s.connection))
     return "\n".join(lines)
 
 
@@ -301,7 +335,7 @@ class App:
         self.bt_was_connected = False
         self.insight_alerted: set[str] = set()
         self.history = HistoryWindow(self.root, self.window.p, self.window.scale)
-        self.root.title(f"iPhone 状态 · v{__version__}")
+        self.root.title(f"{tr('iPhone 状态')} · v{__version__}")
         self.strip = TaskbarStrip(self.root, on_left_click=self.window.toggle, on_right_click=self.show_strip_menu)
         self.strip_menu = self.build_strip_menu()
         # 详情窗口上右键也弹同一个菜单（托盘图标和文字条都不在时的入口）
@@ -325,7 +359,7 @@ class App:
         self.alerted_full = False
 
         self.icon = pystray.Icon(
-            APP_NAME, render_icon(Snapshot(), self.settings["icon_mode"]), "iPhone 状态：正在连接…", menu=self.build_menu()
+            APP_NAME, render_icon(Snapshot(), self.settings["icon_mode"]), tr("iPhone 状态：正在连接…"), menu=self.build_menu()
         )
 
     def ui(self, fn) -> None:
@@ -358,48 +392,50 @@ class App:
             )
 
         return pystray.Menu(
-            item("显示详情", lambda: self.ui(self.window.toggle), default=True),
-            item("立即刷新", lambda: self.monitor.refresh_now()),
+            item(tr("显示详情"), lambda: self.ui(self.window.toggle), default=True),
+            item(tr("立即刷新"), lambda: self.monitor.refresh_now()),
             pystray.Menu.SEPARATOR,
-            item("图标显示", pystray.Menu(
-                mode_item("电量 %", "percent"), mode_item("电池功率 W", "power"),
-                mode_item("CPU %", "cpu"), mode_item("温度 °C", "temp"),
+            item(tr("图标显示"), pystray.Menu(
+                mode_item(tr("电量 %"), "percent"), mode_item(tr("电池功率 W"), "power"),
+                mode_item("CPU %", "cpu"), mode_item(tr("温度 °C"), "temp"),
             )),
-            item("任务栏文字条", lambda: self.set_taskbar_strip(not self.settings["taskbar_strip"]),
+            item(tr("任务栏文字条"), lambda: self.set_taskbar_strip(not self.settings["taskbar_strip"]),
                  checked=lambda _i: bool(self.settings["taskbar_strip"])),
-            item("文字条显示 CPU / 内存", lambda: self.set_strip_cpu(not self.settings["strip_cpu"]),
+            item(tr("文字条显示 CPU / 内存"), lambda: self.set_strip_cpu(not self.settings["strip_cpu"]),
                  checked=lambda _i: bool(self.settings["strip_cpu"]),
                  enabled=lambda _i: bool(self.settings["taskbar_strip"])),
-            item("文字条位置", pystray.Menu(*[
-                item(label, (lambda v=value: lambda: self.set_strip_position(v))(),
+            item(tr("文字条位置"), pystray.Menu(*[
+                item(tr(label), (lambda v=value: lambda: self.set_strip_position(v))(),
                      checked=(lambda v=value: lambda _i: self.settings.get("strip_position", "right") == v)(),
                      radio=True)
                 for value, label in STRIP_POSITIONS
             ]), enabled=lambda _i: bool(self.settings["taskbar_strip"])),
-            item("显示托盘图标", lambda: self.set_tray_icon(not self.settings["tray_icon"]),
+            item(tr("显示托盘图标"), lambda: self.set_tray_icon(not self.settings["tray_icon"]),
                  checked=lambda _i: bool(self.settings["tray_icon"]),
                  enabled=lambda _i: bool(self.settings["taskbar_strip"])),
-            item("CPU / 内存监测", lambda: self.toggle_dev(), checked=lambda _i: bool(self.settings["dev_stats"])),
+            item(tr("CPU / 内存监测"), lambda: self.toggle_dev(), checked=lambda _i: bool(self.settings["dev_stats"])),
             item(
-                "仅通过 USB 连接", lambda: self.set_usb_only(not self.settings["usb_only"]),
+                tr("仅通过 USB 连接"), lambda: self.set_usb_only(not self.settings["usb_only"]),
                 checked=lambda _i: bool(self.settings["usb_only"]),
             ),
-            item("充电上限（与手机设置一致）", pystray.Menu(*[
-                item("不限（100%）" if v == 100 else f"{v}%", (lambda v=v: lambda: self.set_charge_limit(v))(),
+            item(tr("充电上限（与手机设置一致）"), pystray.Menu(*[
+                item(tr("不限（100%）") if v == 100 else f"{v}%", (lambda v=v: lambda: self.set_charge_limit(v))(),
                      checked=(lambda v=v: lambda _i: int(self.settings["charge_limit"]) == v)(), radio=True)
                 for v in CHARGE_LIMITS
             ])),
-            item("电池历史…", lambda: self.ui(self.show_history)),
-            item("手机声音转到电脑（蓝牙）", lambda: self.set_bt_audio(not self.settings["bt_audio"]),
+            item(tr("电池历史…"), lambda: self.ui(self.show_history)),
+            item(tr("手机声音转到电脑（蓝牙）"), lambda: self.set_bt_audio(not self.settings["bt_audio"]),
                  checked=lambda _i: bool(self.settings["bt_audio"])),
-            item("刷新间隔", pystray.Menu(
-                interval_item("1 秒", 1.0), interval_item("2 秒", 2.0),
-                interval_item("5 秒", 5.0), interval_item("10 秒", 10.0),
-            )),
-            item("详情窗口置顶", lambda: self.toggle_topmost(), checked=lambda _i: bool(self.settings["topmost"])),
-            item("开机自动启动", lambda: self.toggle_autostart(), checked=lambda _i: autostart_enabled()),
+            item(tr("刷新间隔"), pystray.Menu(*[interval_item(tr("{n} 秒", n=n), float(n)) for n in (1, 2, 5, 10)])),
+            item(LANGUAGE_MENU, pystray.Menu(*[
+                item(LANGUAGE_LABEL.get(code, label), (lambda c=code: lambda: self.set_language(c))(),
+                     checked=(lambda c=code: lambda _i: self.settings.get("language", "auto") == c)(), radio=True)
+                for code, label in LANGUAGES
+            ])),
+            item(tr("详情窗口置顶"), lambda: self.toggle_topmost(), checked=lambda _i: bool(self.settings["topmost"])),
+            item(tr("开机自动启动"), lambda: self.toggle_autostart(), checked=lambda _i: autostart_enabled()),
             pystray.Menu.SEPARATOR,
-            item("退出", lambda: self.ui(self.quit)),
+            item(tr("退出"), lambda: self.ui(self.quit)),
         )
 
     def set_mode(self, mode: str) -> None:
@@ -480,40 +516,46 @@ class App:
                                                          "autostart", "tray_icon", "bt_audio")}
         self.menu_interval = tk.DoubleVar()
         v = self.menu_vars
-        menu.add_command(label="显示 / 隐藏详情", command=self.window.toggle)
-        menu.add_command(label="电池历史…", command=self.show_history)
-        menu.add_checkbutton(label="手机声音转到电脑（蓝牙）", variable=self.menu_vars["bt_audio"],
+        menu.add_command(label=tr("显示 / 隐藏详情"), command=self.window.toggle)
+        menu.add_command(label=tr("电池历史…"), command=self.show_history)
+        menu.add_checkbutton(label=tr("手机声音转到电脑（蓝牙）"), variable=self.menu_vars["bt_audio"],
                              command=lambda: self.set_bt_audio(self.menu_vars["bt_audio"].get()))
         menu.add_separator()
-        menu.add_checkbutton(label="第二行显示 CPU / 内存", variable=v["strip_cpu"],
+        menu.add_checkbutton(label=tr("第二行显示 CPU / 内存"), variable=v["strip_cpu"],
                              command=lambda: self.set_strip_cpu(v["strip_cpu"].get()))
-        menu.add_checkbutton(label="CPU / 内存监测", variable=v["dev_stats"], command=self.toggle_dev)
-        menu.add_checkbutton(label="仅通过 USB 连接", variable=v["usb_only"],
+        menu.add_checkbutton(label=tr("CPU / 内存监测"), variable=v["dev_stats"], command=self.toggle_dev)
+        menu.add_checkbutton(label=tr("仅通过 USB 连接"), variable=v["usb_only"],
                              command=lambda: self.set_usb_only(v["usb_only"].get()))
         interval = tk.Menu(menu, tearoff=0)
-        for label, seconds in (("1 秒", 1.0), ("2 秒", 2.0), ("5 秒", 5.0), ("10 秒", 10.0)):
-            interval.add_radiobutton(label=label, value=seconds, variable=self.menu_interval,
+        for seconds in (1.0, 2.0, 5.0, 10.0):
+            interval.add_radiobutton(label=tr("{n} 秒", n=int(seconds)), value=seconds, variable=self.menu_interval,
                                      command=lambda s=seconds: self.set_interval(s))
-        menu.add_cascade(label="刷新间隔", menu=interval)
+        menu.add_cascade(label=tr("刷新间隔"), menu=interval)
         limits = tk.Menu(menu, tearoff=0)
         self.menu_limit = tk.IntVar()
         for v_limit in CHARGE_LIMITS:
-            limits.add_radiobutton(label="不限（100%）" if v_limit == 100 else f"{v_limit}%", value=v_limit,
+            limits.add_radiobutton(label=tr("不限（100%）") if v_limit == 100 else f"{v_limit}%", value=v_limit,
                                    variable=self.menu_limit, command=lambda x=v_limit: self.set_charge_limit(x))
-        menu.add_cascade(label="充电上限（与手机设置一致）", menu=limits)
+        menu.add_cascade(label=tr("充电上限（与手机设置一致）"), menu=limits)
         positions = tk.Menu(menu, tearoff=0)
         self.menu_position = tk.StringVar()
         for value, label in STRIP_POSITIONS:
-            positions.add_radiobutton(label=label, value=value, variable=self.menu_position,
+            positions.add_radiobutton(label=tr(label), value=value, variable=self.menu_position,
                                       command=lambda v=value: self.set_strip_position(v))
-        menu.add_cascade(label="文字条位置", menu=positions)
-        menu.add_checkbutton(label="详情窗口置顶", variable=v["topmost"], command=self.toggle_topmost)
-        menu.add_checkbutton(label="开机自动启动", variable=v["autostart"], command=self.toggle_autostart)
-        menu.add_checkbutton(label="显示托盘图标", variable=v["tray_icon"],
+        menu.add_cascade(label=tr("文字条位置"), menu=positions)
+        languages = tk.Menu(menu, tearoff=0)
+        self.menu_language = tk.StringVar()
+        for code, label in LANGUAGES:
+            languages.add_radiobutton(label=LANGUAGE_LABEL.get(code, label), value=code, variable=self.menu_language,
+                                      command=lambda c=code: self.set_language(c))
+        menu.add_cascade(label=LANGUAGE_MENU, menu=languages)
+        menu.add_checkbutton(label=tr("详情窗口置顶"), variable=v["topmost"], command=self.toggle_topmost)
+        menu.add_checkbutton(label=tr("开机自动启动"), variable=v["autostart"], command=self.toggle_autostart)
+        menu.add_checkbutton(label=tr("显示托盘图标"), variable=v["tray_icon"],
                              command=lambda: self.set_tray_icon(v["tray_icon"].get()))
         menu.add_separator()
-        menu.add_command(label="隐藏任务栏文字条（改用托盘图标）", command=lambda: self.set_taskbar_strip(False))
-        menu.add_command(label="退出", command=self.quit)
+        menu.add_command(label=tr("隐藏任务栏文字条（改用托盘图标）"), command=lambda: self.set_taskbar_strip(False))
+        menu.add_command(label=tr("退出"), command=self.quit)
         return menu
 
     def show_strip_menu(self, x: int, y: int) -> None:
@@ -523,6 +565,7 @@ class App:
         self.menu_interval.set(float(self.settings["interval"]))
         self.menu_limit.set(int(self.settings["charge_limit"]))
         self.menu_position.set(self.settings.get("strip_position", "right"))
+        self.menu_language.set(self.settings.get("language", "auto"))
         try:
             self.strip_menu.tk_popup(x, y)
         finally:
@@ -556,7 +599,7 @@ class App:
             cpu_pct=d.cpu_pct if d.active else None,
             mem_pct=mem_pct,
             show_stats=bool(self.settings["strip_cpu"]) and bool(self.settings["dev_stats"]),
-            warning="热点接管了电脑网络" if self.tether_ip else "",
+            warning=tr("热点接管了电脑网络") if self.tether_ip else "",
             stats_note=strip_stats_note(d),
         )
 
@@ -582,19 +625,20 @@ class App:
         if s.percent is not None:
             if s.percent <= LOW_BATTERY and not s.external_power:
                 if not self.alerted_low:
-                    self.notify(f"电量只剩 {s.percent}%，记得充电", "iPhone 电量低")
+                    self.notify(tr("电量只剩 {pct}%，记得充电", pct=s.percent), tr("iPhone 电量低"))
                     self.alerted_low = True
             elif s.percent > LOW_BATTERY + 5 or s.external_power:
                 self.alerted_low = False
         if s.temperature_c is not None:
             if s.temperature_c >= HOT_TEMPERATURE and not self.alerted_hot:
-                self.notify(f"电池温度 {s.temperature_c:.1f}°C，建议暂停重度使用或移开充电器", "iPhone 温度偏高")
+                self.notify(tr("电池温度 {t}°C，建议暂停重度使用或移开充电器", t=f"{s.temperature_c:.1f}"),
+                            tr("iPhone 温度偏高"))
                 self.alerted_hot = True
             elif s.temperature_c < HOT_TEMPERATURE - 3:
                 self.alerted_hot = False
         if s.fully_charged and s.external_power:
             if not self.alerted_full:
-                self.notify("电池已充满", "iPhone")
+                self.notify(tr("电池已充满"), "iPhone")
                 self.alerted_full = True
         elif not s.external_power:
             self.alerted_full = False
@@ -612,8 +656,8 @@ class App:
         if ip:
             log.warning("iPhone 个人热点正在通过 USB 接管电脑网络: %s", ip)
             self.notify(
-                f"电脑正通过 USB 使用手机热点（{ip}），单位内网可能打不开。关闭 iPhone 的「个人热点」即可。",
-                "iPhone 热点接管了电脑网络",
+                tr("电脑正通过 USB 使用手机热点（{ip}），单位内网可能打不开。关闭 iPhone 的「个人热点」即可。", ip=ip),
+                tr("iPhone 热点接管了电脑网络"),
             )
         self.window.set_tether(ip)
         self.shown_tether = ip
@@ -622,8 +666,9 @@ class App:
     def check_charge_alerts(self, ins: ChargeInsight) -> None:
         """插着线掉电 / 慢充持续一段时间后各提醒一次；情况消失后才会再次提醒。"""
         if ins.alert and ins.alert not in self.insight_alerted:
-            title = "iPhone 插电仍掉电" if ins.alert == "drain" else "iPhone 充电慢"
-            hint = "换一根短而好的线，或用 20 W 以上充电头。" if ins.alert == "drain" else "用 20 W 以上充电头会快很多。"
+            drain = ins.alert == "drain"
+            title = tr("iPhone 插电仍掉电") if drain else tr("iPhone 充电慢")
+            hint = tr("换一根短而好的线，或用 20 W 以上充电头。") if drain else tr("用 20 W 以上充电头会快很多。")
             self.notify(ins.diagnosis + "\n" + hint, title)
             self.insight_alerted.add(ins.alert)
         elif not ins.diagnosis:
@@ -638,16 +683,33 @@ class App:
     def check_bt_audio(self) -> None:
         connected = self.bt.connected
         if connected and not self.bt_was_connected:
-            self.notify(f"手机声音会从电脑播放（{self.bt.device_name}）。没声音的话，在 iPhone 控制中心的"
-                        "音频输出里选这台电脑。", "手机声音已转到电脑")
+            self.notify(tr("手机声音会从电脑播放（{name}）。没声音的话，在 iPhone 控制中心的音频输出里选这台电脑。",
+                           name=self.bt.device_name), tr("手机声音已转到电脑"))
         self.bt_was_connected = connected
         if self.window.visible:
-            self.window.set_bt(self.bt.status if self.bt.enabled else "已关闭（右键菜单可开启）", connected)
+            self.window.set_bt(self.bt.status if self.bt.enabled else tr("已关闭（右键菜单可开启）"), connected)
 
     def set_charge_limit(self, limit: int) -> None:
         self.settings["charge_limit"] = limit
         save_settings(self.settings)
         self.icon.update_menu()
+
+    def set_language(self, code: str) -> None:
+        """界面文字在启动时确定，换语言就重启程序（可能在 pystray 线程里调用）。"""
+        if code == self.settings.get("language", "auto"):
+            return
+        self.settings["language"] = code
+        save_settings(self.settings)
+        self.ui(self.restart)
+
+    def restart(self) -> None:
+        log.info("切换语言，重启程序")
+        try:
+            subprocess.Popen(restart_command(), close_fds=True)
+        except OSError as exc:
+            log.warning("重启失败: %r", exc)
+            return
+        self.quit()
 
     def show_history(self) -> None:
         s = self.monitor.snapshot()
@@ -712,11 +774,13 @@ class App:
         # 数据最快 1 秒一更，窗口开着时 0.5 秒刷新足够；关着时 1 秒，少唤醒
         self.root.after(TICK_VISIBLE_MS if self.window.visible else TICK_IDLE_MS, self.tick)
 
-    def run(self) -> None:
+    def run(self, show_window: bool = False) -> None:
         self.monitor.start()
         threading.Thread(target=self.watch_tethering, name="tether-watch", daemon=True).start()
         self.icon.run_detached(setup=self.tray_setup)
         self.root.after(TICK_IDLE_MS, self.tick)
+        if show_window:
+            self.root.after(TICK_IDLE_MS, self.window.show)
         self.root.mainloop()
 
     def quit(self) -> None:
@@ -736,11 +800,12 @@ def main() -> None:
         pass
     setup_logging()
     log.info("iPhone Monitor %s 启动（%s）", __version__, "exe" if FROZEN else "源码")
-    if not single_instance():
+    restarted = RESTART_ARG in sys.argv
+    if not (wait_single_instance(RESTART_WAIT_SECONDS) if restarted else single_instance()):
         log.info("已有实例在运行，通知它打开详情窗口")
         signal_running_instance()
         return
-    App().run()
+    App().run(show_window=restarted)  # 换完语言直接把详情窗口打开，让人看到效果
 
 
 if __name__ == "__main__":
