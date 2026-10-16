@@ -40,7 +40,7 @@ if not exist dist\iPhoneMonitor\third_party\wintun mkdir dist\iPhoneMonitor\thir
 copy /y third_party\wintun\LICENSE.txt dist\iPhoneMonitor\third_party\wintun\ >nul
 
 rem Zip + SHA256 for the release page
-.build-venv\Scripts\python -c "import hashlib, os, zipfile; z = zipfile.ZipFile('dist/iPhoneMonitor.zip', 'w', zipfile.ZIP_DEFLATED, compresslevel=9); [z.write(os.path.join(r, f), os.path.relpath(os.path.join(r, f), 'dist')) for r, _, fs in os.walk('dist/iPhoneMonitor') for f in fs]; z.close(); h = hashlib.sha256(open('dist/iPhoneMonitor.zip', 'rb').read()).hexdigest(); open('dist/iPhoneMonitor.zip.sha256', 'w').write(h + '  iPhoneMonitor.zip\n'); print('SHA256', h)" || exit /b 1
+.build-venv\Scripts\python -c "import hashlib, os, zipfile; z = zipfile.ZipFile('dist/iPhoneMonitor.zip', 'w', zipfile.ZIP_DEFLATED, compresslevel=9); [z.write(os.path.join(r, f), os.path.relpath(os.path.join(r, f), 'dist')) for r, _, fs in os.walk('dist/iPhoneMonitor') for f in fs]; z.close(); h = hashlib.sha256(open('dist/iPhoneMonitor.zip', 'rb').read()).hexdigest(); open('dist/iPhoneMonitor.zip.sha256', 'w', newline='\n').write(h + '  iPhoneMonitor.zip\n'); print('SHA256', h)" || exit /b 1
 echo.
 echo Built: dist\iPhoneMonitor\iPhoneMonitor.exe
 echo        dist\iPhoneMonitor.zip (+ .sha256)
