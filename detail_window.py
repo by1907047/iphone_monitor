@@ -5,13 +5,14 @@
   电量大字 + 电池条（标出充电上限）+ 状态 / 预计时间 / 电源
   提示条（充电诊断、热点接管网络；正常时不显示）
   四个数字卡：整机耗电 · 外部供电 · 电池 · CPU/内存
-  近 10 分钟曲线（功率 / CPU·内存 切换）
+  近 10 分钟曲线（功率 / CPU·内存）或近 7 天每天放电量（电池损耗），三者切换
   电源 | 电池与存储 两栏明细
   占用最高的进程
   更新时间 · 电池历史 · 刷新
 """
 
 import ctypes
+import datetime
 import time
 import tkinter as tk
 from ctypes import wintypes
@@ -19,7 +20,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from i18n import tr
-from insights import ChargeInsight
+from insights import ChargeInsight, cycle_wh, device_key, load_sessions, load_wear
 from monitor import DevStats, Monitor, Snapshot
 from ui_common import (
     FONT_NUM, FONT_UI, LOW_BATTERY, Palette, charge_state, fmt, format_minutes, power_source, windows_dark_mode,
@@ -29,6 +30,9 @@ from ui_common import (
 CONTENT_DIP = 440  # 内容区宽度
 TOP_N = 3
 HISTORY_SPAN = 600.0
+WEAR_DAYS = 7
+MJ_PER_WH = 3.6e6
+SLOW_REFRESH_SECONDS = 60  # 放电统计、上次充电要读文件，不用每次刷新都读
 OWN_PROCESSES = ("DTServiceHub", "sysmond")  # 采样服务本身
 
 user32 = ctypes.windll.user32
@@ -42,11 +46,10 @@ SWP_NOSIZE, SWP_NOZORDER, SWP_NOACTIVATE = 0x0001, 0x0004, 0x0010
 class DetailWindow:
     def __init__(self, root: tk.Tk, monitor: Monitor, settings: dict,
                  on_usb_only: Optional[Callable[[bool], None]] = None,
-                 on_history: Optional[Callable[[], None]] = None,
                  charge_limit: Callable[[], int] = lambda: 100,
                  dock_side: Callable[[], str] = lambda: "right") -> None:
         self.root, self.monitor, self.settings = root, monitor, settings
-        self.on_history = on_history
+        self._slow_at = 0.0
         self.charge_limit = charge_limit
         self.dock_side = dock_side  # 窗口贴哪个角：跟着任务栏文字条在左边还是右边
         self.insight = ChargeInsight()  # 由 App 每次拿到新数据后更新
@@ -164,9 +167,10 @@ class DetailWindow:
         p = self.p
         head = tk.Frame(self.root, bg=p.bg)
         head.pack(fill="x", padx=self.pad, pady=(self.d(8), self.d(3)))
-        self._label(head, tr("近 10 分钟"), size=9, bold=True).pack(side="left")
+        self.chart_title = self._label(head, tr("近 10 分钟"), size=9, bold=True)
+        self.chart_title.pack(side="left")
         self.mode_buttons: dict[str, tk.Label] = {}
-        for mode, text in (("power", tr("功率")), ("stats", tr("CPU / 内存"))):
+        for mode, text in (("power", tr("功率")), ("stats", tr("CPU / 内存")), ("wear", tr("电池损耗"))):
             btn = self._label(head, text, size=8, padx=self.d(6), pady=0, cursor="hand2")
             btn.pack(side="left", padx=(self.d(6) if mode == "power" else self.d(2), 0))
             btn.bind("<Button-1>", lambda _e, m=mode: self.set_chart_mode(m))
@@ -182,6 +186,7 @@ class DetailWindow:
     def _build_details(self) -> None:
         p = self.p
         card = self._card(self.root)
+        card.configure(pady=self.d(4))
         card.pack(fill="x", padx=self.pad, pady=(self.d(8), 0))
         self.details: dict[str, tk.Label] = {}
         self.detail_rows: dict[str, tuple[tk.Label, tk.Label]] = {}
@@ -189,10 +194,11 @@ class DetailWindow:
         rows = ((("source", tr("充电器")), ("health", tr("健康度"))),
                 (("supply", tr("电源电压")), ("capacity", tr("容量"))),
                 (("line", tr("线路电阻")), ("disk", tr("存储"))),
-                (("bt", tr("声音转电脑")), ("temp", tr("温度"))))
+                (("bt", tr("声音转电脑")), ("last", tr("上次充电"))),
+                (("temp", tr("温度")),))  # iOS 27 不提供温度，这一行多数时候是隐藏的
         wrap = self.width // 2 - self.d(64)
         for r, pair in enumerate(rows):
-            pady = (self.d(5) if r == 0 else self.d(1), self.d(5) if r == len(rows) - 1 else self.d(1))
+            pady = self.d(1)
             for c, (key, name) in enumerate(pair):
                 k = self._label(card, name, size=8, color=p.muted, anchor="w")
                 v = self._label(card, "—", size=8, anchor="w", justify="left", wraplength=wrap)
@@ -235,8 +241,7 @@ class DetailWindow:
         footer.pack(fill="x", padx=self.pad, pady=(self.d(8), self.pad))
         self.updated_label = self._label(footer, "", size=8, color=p.muted)
         self.updated_label.pack(side="left")
-        for text, command in ((tr("刷新"), self.monitor.refresh_now),
-                              (tr("电池历史"), lambda: self.on_history and self.on_history())):
+        for text, command in ((tr("刷新"), self.monitor.refresh_now),):
             btn = tk.Label(footer, text=text, font=(FONT_UI, 8), bg=p.card, fg=p.fg, padx=self.d(8),
                            pady=self.d(2), cursor="hand2", highlightthickness=1, highlightbackground=p.line)
             btn.pack(side="right", padx=(self.d(6), 0))
@@ -309,6 +314,7 @@ class DetailWindow:
 
     def set_chart_mode(self, mode: str) -> None:
         self.chart_mode = mode
+        self.chart_title.config(text=tr("近 7 天") if mode == "wear" else tr("近 10 分钟"))
         self._style_mode_buttons()
         self.draw_chart()
 
@@ -320,8 +326,9 @@ class DetailWindow:
                        highlightthickness=1 if active else 0, highlightbackground=p.line)
         for child in self.legend.winfo_children():
             child.destroy()
-        legend = (((tr("整机耗电"), p.orange), (tr("电池"), p.green)) if self.chart_mode == "power"
-                  else (("CPU", p.blue), (tr("内存"), p.purple)))
+        legend = {"power": ((tr("整机耗电"), p.orange), (tr("电池"), p.green)),
+                  "stats": (("CPU", p.blue), (tr("内存"), p.purple)),
+                  "wear": ((tr("插电时"), p.orange), (tr("拔线时"), p.blue))}[self.chart_mode]
         for name, color in legend:
             self._label(self.legend, f"● {name}", size=8, color=color).pack(side="left", padx=(self.d(8), 0))
 
@@ -414,8 +421,23 @@ class DetailWindow:
 
         if s.timestamp:
             self.updated_label.config(text=tr("更新于 {t}", t=time.strftime("%H:%M:%S", time.localtime(s.timestamp))))
-        if self.chart_mode == "power":
+        slow_due = time.time() - self._slow_at >= SLOW_REFRESH_SECONDS
+        if slow_due:
+            self._slow_at = time.time()
+            self._update_last_charge(s)
+        if self.chart_mode == "power" or (self.chart_mode == "wear" and slow_due):
             self.draw_chart()
+
+    def _update_last_charge(self, s: Snapshot) -> None:
+        sessions = load_sessions(device_key(s) if s.connected else None, 1)
+        if not sessions:
+            self.details["last"].config(text="—")
+            return
+        r = sessions[0]
+        minutes = (r["end"] - r["start"]) / 60
+        duration = tr("{m} 分钟", m=f"{minutes:.0f}") if minutes < 60 else tr("{h} 小时", h=f"{minutes / 60:.1f}")
+        day = time.strftime("%m-%d", time.localtime(r["start"]))
+        self.details["last"].config(text=f"{r['start_pct']}→{r['end_pct']}% · {duration} · {day}")
 
     def update_dev(self, dv: DevStats) -> None:
         self.last_dev = dv
@@ -482,13 +504,60 @@ class DetailWindow:
     # ================================================================ 曲线
     def draw_chart(self) -> None:
         p = self.p
-        if self.chart_mode == "power":
+        if self.chart_mode == "wear":
+            self._draw_wear()
+        elif self.chart_mode == "power":
             pts = self.monitor.history()
             self._draw_series([(t[0], t[2]) for t in pts], [(t[0], t[1]) for t in pts], (p.orange, p.green))
         else:
             pts = self.monitor.dev_history()
             self._draw_series([(t[0], t[1]) for t in pts], [(t[0], t[2]) for t in pts], (p.blue, p.purple),
                               fixed=(0.0, 100.0), digits=0, unit="%")
+
+    def _draw_wear(self) -> None:
+        """近 7 天每天的放电量，插电时 / 拔线时叠起来；单位是电池容量的百分比，方便和手机的「电池用量」对照。"""
+        p, c, s = self.p, self.chart, self.last_snapshot
+        c.delete("all")
+        w, h = self.chart_w, self.chart_h
+        rows = dict(load_wear(device_key(s) if s.connected else None, WEAR_DAYS))
+        design = s.design_mah or next((d["design_mah"] for d in rows.values() if d.get("design_mah")), None)
+        per_cycle = cycle_wh(design)
+        unit = 100 / per_cycle if per_cycle else 1.0  # Wh → 电池百分比；没有设计容量时直接显示 Wh
+        today = datetime.date.today()
+        dates = [(today - datetime.timedelta(days=i)).isoformat() for i in range(WEAR_DAYS - 1, -1, -1)]
+        bars = [(rows[d]["plugged_mj"] / MJ_PER_WH * unit, rows[d]["unplugged_mj"] / MJ_PER_WH * unit)
+                if d in rows else None for d in dates]
+        small = (FONT_UI, 8)
+        logged = [b for b in bars if b]
+        if not any(sum(b) > 0 for b in logged):
+            c.create_text(w / 2, h / 2, text=tr("还没有数据。连着手机时会自动统计。"), fill=p.muted, font=small)
+            return
+
+        def fmt_v(v: float) -> str:
+            if not per_cycle:
+                return f"{v:.1f} Wh"
+            return f"{v:.0f}%" if v >= 9.5 else f"{v:.1f}%"  # 小于 10% 带一位小数，刚开始统计时不至于全是 0%
+
+        total = sum(sum(b) for b in logged)
+        c.create_text(self.d(8), self.d(9), anchor="w", fill=p.muted, font=small,
+                      text=tr("平均每天放电 {v} · 插电时占 {pct}%", v=fmt_v(total / len(logged)),
+                              pct=f"{sum(b[0] for b in logged) * 100 / total:.0f}"))
+        top, bottom = self.d(32), h - self.d(14)
+        scale = (bottom - top) / max(max(sum(b) for b in logged), 10 if per_cycle else 1.5)
+        slot = (w - self.d(16)) / WEAR_DAYS
+        bar_w = slot * 0.46
+        for i, (date, b) in enumerate(zip(dates, bars)):
+            x = self.d(8) + slot * i + (slot - bar_w) / 2
+            label = tr("今天") if i == WEAR_DAYS - 1 else date[5:]
+            c.create_text(x + bar_w / 2, h - self.d(7), text=label, fill=p.muted, font=small)
+            if not b:
+                c.create_line(x, bottom, x + bar_w, bottom, fill=p.line)
+                continue
+            y_pl = bottom - b[0] * scale
+            y_un = y_pl - b[1] * scale
+            c.create_rectangle(x, y_pl, x + bar_w, bottom, fill=p.orange, width=0)
+            c.create_rectangle(x, y_un, x + bar_w, y_pl, fill=p.blue, width=0)
+            c.create_text(x + bar_w / 2, y_un - self.d(2), anchor="s", text=fmt_v(sum(b)), fill=p.fg, font=small)
 
     def _draw_series(self, first, second, colors, fixed=None, digits=1, unit="W") -> None:
         p, c = self.p, self.chart

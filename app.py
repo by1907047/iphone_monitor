@@ -29,12 +29,11 @@ from monitor import FROZEN, LOG_DIR, DevStats, Monitor, Snapshot
 from insights import CHARGE_LIMITS, ChargeInsight, Insights
 from bt_audio import BluetoothAudio
 from detail_window import DetailWindow
-from history_window import HistoryWindow
 from taskbar_strip import TaskbarStrip
 from ui_common import charge_state, fmt
 
 APP_NAME = "iPhoneMonitor"
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 HERE = Path(__file__).resolve().parent
 SETTINGS_FILE = Path(os.environ.get("APPDATA", HERE)) / APP_NAME / "settings.json"
 DEFAULT_SETTINGS = {
@@ -327,14 +326,12 @@ class App:
         # pythonw 下没有 stderr，Tk 回调里的异常默认会被吞掉，记到日志里
         self.root.report_callback_exception = lambda *exc: log.error("界面回调出错", exc_info=exc)
         self.window = DetailWindow(self.root, self.monitor, self.settings, on_usb_only=self.set_usb_only,
-                                   on_history=self.show_history,
                                    charge_limit=lambda: int(self.settings["charge_limit"]),
                                    dock_side=self.window_side)
         self.insights = Insights(lambda: int(self.settings["charge_limit"]))
         self.bt = BluetoothAudio(lambda: self.monitor.snapshot().name, enabled=bool(self.settings["bt_audio"]))
         self.bt_was_connected = False
         self.insight_alerted: set[str] = set()
-        self.history = HistoryWindow(self.root, self.window.p, self.window.scale)
         self.root.title(f"{tr('iPhone 状态')} · v{__version__}")
         self.strip = TaskbarStrip(self.root, on_left_click=self.window.toggle, on_right_click=self.show_strip_menu)
         self.strip_menu = self.build_strip_menu()
@@ -423,7 +420,6 @@ class App:
                      checked=(lambda v=v: lambda _i: int(self.settings["charge_limit"]) == v)(), radio=True)
                 for v in CHARGE_LIMITS
             ])),
-            item(tr("电池历史…"), lambda: self.ui(self.show_history)),
             item(tr("手机声音转到电脑（蓝牙）"), lambda: self.set_bt_audio(not self.settings["bt_audio"]),
                  checked=lambda _i: bool(self.settings["bt_audio"])),
             item(tr("刷新间隔"), pystray.Menu(*[interval_item(tr("{n} 秒", n=n), float(n)) for n in (1, 2, 5, 10)])),
@@ -517,7 +513,6 @@ class App:
         self.menu_interval = tk.DoubleVar()
         v = self.menu_vars
         menu.add_command(label=tr("显示 / 隐藏详情"), command=self.window.toggle)
-        menu.add_command(label=tr("电池历史…"), command=self.show_history)
         menu.add_checkbutton(label=tr("手机声音转到电脑（蓝牙）"), variable=self.menu_vars["bt_audio"],
                              command=lambda: self.set_bt_audio(self.menu_vars["bt_audio"].get()))
         menu.add_separator()
@@ -710,10 +705,6 @@ class App:
             log.warning("重启失败: %r", exc)
             return
         self.quit()
-
-    def show_history(self) -> None:
-        s = self.monitor.snapshot()
-        self.history.show(s, self.window.insight)
 
     def drain_tasks(self) -> None:
         while True:

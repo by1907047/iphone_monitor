@@ -14,7 +14,7 @@ A lightweight Windows taskbar tool that shows a USB-connected iPhone's **battery
 - **Details window**: system load, external supply (voltage × current), battery in/out power, 10-minute charts, and the processes using the most CPU. Docks to the screen corner and follows light/dark mode.
 - **Power supply diagnosis**: estimates the **source voltage** and **line resistance** from voltage/current samples (V = V₀ − I·R), so you can tell a bad cable from a weak port or a heavy workload. Alerts when the phone drains while plugged in or charges slowly.
 - **Charging insights**: charge limit (kept in sync with the phone setting by you), time-to-full estimate, daily battery health log, and a record of every charging session.
-- **Battery wear**: how much the battery discharged each day, split into plugged-in and unplugged, in equivalent charge cycles, from the phone's own energy counters — so you can see where your cycle count comes from.
+- **Battery wear**: a 7-day view in the details window showing how much of the battery was discharged each day, plugged in vs unplugged, measured from the phone's own energy counters (finer than the phone's whole-percent stats), so you can see where your cycle count comes from.
 - **Phone audio on your PC**: turns the PC into a Bluetooth speaker for the iPhone (A2DP sink), so phone audio plays through the headphones already plugged into your PC.
 - **Hotspot takeover warning**: warns when the iPhone's Personal Hotspot over USB takes over the PC's network.
 - **Lightweight**: about 0.1% of one core on the PC with the window closed; monitoring itself costs about 1–2% of one core on the phone.
@@ -23,7 +23,7 @@ A lightweight Windows taskbar tool that shows a USB-connected iPhone's **battery
 <img src="docs/images/details-en.png" width="400" alt="Details window">
 <img src="docs/images/details-dark-en.png" width="400" alt="Details window (dark)">
 </p>
-<img src="docs/images/history-en.png" width="400" alt="Battery history">
+<img src="docs/images/wear-en.png" width="400" alt="Battery wear: daily discharge, plugged in vs unplugged">
 
 ## Getting started
 
