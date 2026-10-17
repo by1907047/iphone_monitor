@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 DATA_DIR = Path(os.environ.get("APPDATA", Path(__file__).parent)) / "iPhoneMonitor"
 HEALTH_FILE = DATA_DIR / "battery_health.csv"
 SESSIONS_FILE = DATA_DIR / "charge_sessions.jsonl"
+WEAR_FILE = DATA_DIR / "battery_wear.json"
 HEALTH_FIELDS = ["date", "device", "health_pct", "cycle_count", "full_mah", "design_mah"]
 
 CHARGE_LIMITS = (80, 85, 90, 95, 100)  # 与 iPhone「设置 → 电池 → 充电」一致；100 表示不限
@@ -28,6 +29,10 @@ DRAIN_W = 0.1  # 电池功率低于 -0.1 W 算放电
 SLOW_CHARGE_W = 2.5  # 充入电池的功率低于它算慢充（离目标还远时）
 LOW_PORT_W = 7.5  # Apple：有线 ≤ 7.5 W 可能充得慢；电脑 USB 口通常就在这个档
 SUPPLY_MARGIN_W = 0.5  # 输入比耗电少这么多以上，才算供电不够
+WEAR_GAP_SECONDS = 60  # 两次读数隔这么久以上，就当中间手机没连着电脑
+WEAR_SAVE_SECONDS = 60
+WEAR_KEEP_DAYS = 90
+NOMINAL_V = 3.85  # 锂电池标称电压，用来把 mAh 换算成 Wh
 VOLTAGE_SAG_V = 0.4  # 手机端电压比充电器标称低这么多，说明线材/接口压降大
 HIGH_LOAD_CPU = 50
 DRAIN_ALERT_AFTER = 120  # 持续这么久才提醒，避免瞬时波动
@@ -112,6 +117,7 @@ class Insights:
         self.first_feed = True
         self.supply = SupplyEstimator()
         self.health_logged: dict[str, str] = self._read_last_health_dates()
+        self.wear = WearTracker()
 
     # ---- 主入口 ----
     def feed(self, s: Snapshot, tether: bool = False, cpu_pct: Optional[float] = None) -> ChargeInsight:
@@ -127,12 +133,14 @@ class Insights:
         self._update_current(s, dt)
         self._track_session(s, dt, now)
         self._log_health(s)
+        self.wear.feed(s, self.at_limit(s))
         self.first_feed = False
         return self._analyse(s, now, tether, cpu_pct)
 
     def close(self) -> None:
         if self.session:
             self._end_session("app_exit")
+        self.wear.save()
 
     # ---- 状态、预计时间、诊断 ----
     def at_limit(self, s: Snapshot) -> bool:
@@ -307,6 +315,106 @@ class Insights:
             log.warning("写电池健康记录失败: %r", exc)
 
 
+class WearTracker:
+    """按天统计电池放电量，分成插电时和拔线时，用来看循环次数是怎么涨的。
+
+    数据来自手机的 PowerTelemetryData：开机以来每秒累加一次的电池放电能量（mW·s）。
+    连着电脑时，相邻两次读数之差就是这段时间的放电；断开一段时间后再连上，差值就是离开期间的放电
+    （按这段时间有没有外部供电归到插电或拔线）。手机重启后计数清零，重启前没读到的部分算不进来。
+    """
+
+    def __init__(self) -> None:
+        data = _read_json(WEAR_FILE)
+        self.last: dict[str, dict] = data.get("last", {})  # 设备 -> 上一次读数
+        self.days: dict[str, dict[str, dict]] = data.get("days", {})  # 设备 -> 日期 -> 当天累计
+        self.saved_at = time.time()
+        self.dirty = False
+
+    def feed(self, s: Snapshot, at_limit: bool) -> None:
+        if s.acc_discharge_mj is None:
+            return  # 机型不提供遥测数据
+        key, now = device_key(s), s.timestamp or time.time()
+        cur = dict(ts=now, uptime=s.acc_uptime_s or 0, discharge=s.acc_discharge_mj, charge=s.acc_charge_mj or 0,
+                   plugged_s=s.acc_plugged_s or 0, plugged=bool(s.external_power))
+        prev, self.last[key] = self.last.get(key), cur
+        today = self._day(key, time.strftime("%Y-%m-%d", time.localtime(now)))
+        today["cycles"], today["design_mah"] = s.cycle_count, s.design_mah
+        self.dirty = True
+        if prev:
+            self._add(key, prev, cur, at_limit)
+        if now - self.saved_at >= WEAR_SAVE_SECONDS:
+            self.save()
+
+    def _add(self, key: str, prev: dict, cur: dict, at_limit: bool) -> None:
+        # 没重启的话，开机秒数应该正好涨了这段时间；明显少了说明中间重启过，计数从 0 开始
+        reset = cur["uptime"] < prev.get("uptime", 0) + (cur["ts"] - prev["ts"]) * 0.9 - 60
+        base = dict(discharge=0, charge=0, plugged_s=0) if reset else prev
+        discharge = max(0, cur["discharge"] - base["discharge"])
+        charge = max(0, cur["charge"] - base["charge"])
+        start = max(prev["ts"], cur["ts"] - cur["uptime"]) if reset else prev["ts"]
+        elapsed = cur["ts"] - start
+        if reset or cur["ts"] - prev["ts"] > WEAR_GAP_SECONDS:
+            # 中间没连着电脑：看手机自己记的有外部供电的时长，大部分时间插着电才算插电
+            plugged = elapsed > 0 and (cur["plugged_s"] - base["plugged_s"]) >= elapsed * 0.9
+            limit = False
+        else:
+            plugged = prev["plugged"] and cur["plugged"]
+            limit = plugged and at_limit
+        bucket = "plugged_mj" if plugged else "unplugged_mj"
+        for date, share in _split_days(start, cur["ts"]):
+            day = self._day(key, date)
+            day[bucket] += discharge * share
+            day["charge_mj"] += charge * share
+            if limit:
+                day["limit_mj"] += discharge * share
+
+    def _day(self, key: str, date: str) -> dict:
+        days = self.days.setdefault(key, {})
+        if date not in days:
+            days[date] = dict(plugged_mj=0.0, unplugged_mj=0.0, limit_mj=0.0, charge_mj=0.0, cycles=None,
+                              design_mah=None)
+            for old in sorted(days)[:-WEAR_KEEP_DAYS]:
+                del days[old]
+        return days[date]
+
+    def save(self) -> None:
+        if not self.dirty:
+            return
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            WEAR_FILE.write_text(json.dumps(dict(last=self.last, days=self.days), ensure_ascii=False), encoding="utf-8")
+            self.saved_at, self.dirty = time.time(), False
+        except OSError as exc:
+            log.warning("写电池损耗记录失败: %r", exc)
+
+
+def _split_days(t0: float, t1: float):
+    """把 t0~t1 这段时间按自然日切开，返回 (日期, 占比)。"""
+    if t1 <= t0:
+        yield time.strftime("%Y-%m-%d", time.localtime(t1)), 1.0
+        return
+    t = t0
+    while t < t1:
+        lt = time.localtime(t)
+        midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday + 1, 0, 0, 0, 0, 0, -1))
+        end = min(midnight, t1)
+        yield time.strftime("%Y-%m-%d", lt), (end - t) / (t1 - t0)
+        t = end
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def cycle_wh(design_mah: Optional[int]) -> Optional[float]:
+    """一次完整循环大约放出的电量（Wh）：设计容量 × 标称电压。"""
+    return design_mah * NOMINAL_V / 1000 if design_mah else None
+
+
 # ---- 读取历史（给历史窗口用） ----
 def load_health(device: Optional[str] = None) -> list[dict]:
     try:
@@ -331,3 +439,12 @@ def load_sessions(device: Optional[str] = None, limit: int = 30) -> list[dict]:
         if device is None or r.get("device") == device:
             records.append(r)
     return records[-limit:][::-1]  # 最新的在前
+
+
+def load_wear(device: Optional[str], days: int = 7) -> list[tuple[str, dict]]:
+    """最近几天的放电统计，最新的在前。"""
+    data = _read_json(WEAR_FILE).get("days", {})
+    if device is None:
+        device = max(data, key=lambda d: max(data[d], default=""), default=None)  # 没连着就看最近有数据的设备
+    rows = data.get(device, {}) if device else {}
+    return sorted(rows.items(), reverse=True)[:days]

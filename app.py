@@ -34,7 +34,7 @@ from taskbar_strip import TaskbarStrip
 from ui_common import charge_state, fmt
 
 APP_NAME = "iPhoneMonitor"
-__version__ = "1.1.1"
+__version__ = "1.2.0"
 HERE = Path(__file__).resolve().parent
 SETTINGS_FILE = Path(os.environ.get("APPDATA", HERE)) / APP_NAME / "settings.json"
 DEFAULT_SETTINGS = {

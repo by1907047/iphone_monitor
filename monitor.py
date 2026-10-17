@@ -81,6 +81,12 @@ class Snapshot:
     disk_total: Optional[int] = None
     disk_free: Optional[int] = None
 
+    # 手机开机以来每秒累加一次的电池能量（mW·s），用来按天统计放电量；重启后清零
+    acc_discharge_mj: Optional[int] = None
+    acc_charge_mj: Optional[int] = None
+    acc_plugged_s: Optional[int] = None  # 开机以来有外部供电的秒数
+    acc_uptime_s: Optional[int] = None  # 开机以来的秒数（遥测每秒采样一次）
+
 
 @dataclass(frozen=True)
 class DevStats:
@@ -158,6 +164,7 @@ def parse_battery(raw: dict[str, Any]) -> dict[str, Any]:
     )
     health = round(full * 100 / design, 1) if design and full else None
     remaining = _first(raw.get("AppleRawCurrentCapacity"), battery_data.get("RemainingCapacity"))
+    discharge = telemetry.get("AccumulatedBatteryDischarge")  # 负数
 
     adapter_name = _first(adapter.get("Name"), adapter.get("Description"), adapter.get("Manufacturer")) or ""
     adapter_name = ADAPTER_NAMES.get(str(adapter_name).lower(), str(adapter_name))
@@ -190,6 +197,10 @@ def parse_battery(raw: dict[str, Any]) -> dict[str, Any]:
         full_mah=full,
         remaining_mah=remaining,
         health_pct=health,
+        acc_discharge_mj=abs(_signed64(discharge)) if discharge is not None else None,
+        acc_charge_mj=_signed64(telemetry.get("AccumulatedBatteryPower")),
+        acc_plugged_s=telemetry.get("SystemPowerInAccumulatorCount"),
+        acc_uptime_s=telemetry.get("SystemLoadAccumulatorCount"),
     )
 
 

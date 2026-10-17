@@ -219,6 +219,23 @@ EN = {
     "还没有记录。手机连着时每天自动记一次。": "Nothing logged yet. One entry is saved per day while the iPhone is connected.",
     "记满 2 天后显示趋势": "The trend appears after 2 days",
     "还没有充电记录。插着线充一次电后会出现在这里。": "No sessions yet. Charge once over a cable and it shows up here.",
+    # ---- 电池损耗
+    "电池损耗（每天放电量）": "Battery wear (daily discharge)",
+    "日期": "Date",
+    "插电时": "Plugged",
+    "拔线时": "Unplugged",
+    "合计": "Total",
+    "≈ 循环": "≈ cycles",
+    "循环计数": "Cycles",
+    "还没有数据。程序连着手机时会自动统计；手机重启后会从头计数。":
+        "No data yet. It is collected while the iPhone is connected; the phone's counters restart after a reboot.",
+    "近 {n} 天平均每天放电 {wh} Wh": "Last {n} days: {wh} Wh discharged per day on average",
+    "，约 {c} 次循环": " (~{c} cycles)",
+    "；{pct}% 发生在插电时。": "; {pct}% while plugged in. ",
+    "插电时的放电有 {pct}% 在到达充电上限之后（正常现象）。":
+        "{pct}% of the plugged-in discharge happened after reaching the charge limit (expected).",
+    "放完约 {wh} Wh（一整块电池的电量）算 1 次循环，不管分几次放完。":
+        "One cycle = discharging about {wh} Wh (one full battery), however many charges that takes.",
     # ---- 蓝牙音频
     "不可用（系统不支持）": "Unavailable (not supported by Windows)",
     "连接已断开，稍后重连": "Disconnected, reconnecting soon",
