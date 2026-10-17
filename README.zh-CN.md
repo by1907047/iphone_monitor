@@ -173,7 +173,7 @@ pymobiledevice3 lockdown wifi-connections on
 - 试过「只有文字条时 CPU 只订阅 pid、5 秒一次」的精简采样，手机整机 CPU 测不出差别（低于手机自身 1–3% 的波动），所以没有采用。
 - **全部事件驱动**：后台不再定时轮询状态，点托盘图标等操作会立刻响应。
 - **只订阅用到的数据**：进程只要名字、PID、CPU、内存 4 个字段（默认会订阅约 70 个），系统只要内存相关的 7 个字段。
-- **修正两个库的默认值**：采样输出频率从 1 ms 改为 2 秒（`DTServiceHub` 从约 20% 降到约 1%）；数据开始推送后，隧道的延迟 ACK 从 1 ms 调回 100 ms（电脑端从约 6% 降到约 1%，手机端 `kernel_task` 也跟着降了）。
+- **上游已修复的两处开销**：开发过程中发现并报告给 pymobiledevice3 的两个问题已在 11.33.1 / pmd-pytcp 0.3.8 修复（[#2037](https://github.com/doronz88/pymobiledevice3/issues/2037)、[#2038](https://github.com/doronz88/pymobiledevice3/issues/2038)）：采样输出频率写死 1 ms（`DTServiceHub` 从约 20% 降到约 3%），以及隧道延迟 ACK 定时器空转（电脑端从约 4% 降到约 1%）。
 - **热点检测**直接调用 Windows 网络 API（每次约 0.2 ms），不再启动 PowerShell（原来每次要 3.5 秒 CPU）。
 - **开发者通道相关的模块按需加载**，只看电池时不加载。
 

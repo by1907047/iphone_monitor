@@ -36,11 +36,8 @@ SYSMON_SYSTEM_ATTRS = [
     "physMemSize", "vmActiveCount", "vmWireCount", "vmCompressorPageCount",
     "vmFreeCount", "vmInactiveCount", "vmSpeculativeCount",
 ]
-# 采样间隔；同时用作输出频率（见 _dev_session 里对 ur 的设置）
+# 采样间隔；pymobiledevice3 11.33.1 起输出频率也跟着它（之前写死 1 ms）
 SYSMON_INTERVAL_MS = 2000
-# 数据开始推送后把隧道的延迟 ACK 从 pymobiledevice3 设的 1 ms 调回 RFC 默认 100 ms。
-# 1 ms 是为了建连阶段的请求/应答不被卡；推送阶段它会让定时器每毫秒醒一次（实测电脑端 6% → 1%）。
-STREAM_ACK_DELAY_MS = 100
 ADAPTER_NAMES = {"pd charger": "USB-C PD", "usb host": "USB 主机", "usb charger": "USB 充电器"}
 
 
@@ -408,7 +405,6 @@ class Monitor:
 
     async def _dev_session(self) -> None:
         # 导入较慢、占内存（纯 Python 网络栈等），只在需要时加载
-        from pmd_pytcp.protocols.tcp import tcp__constants
         from pymobiledevice3.exceptions import AlreadyMountedError
         from pymobiledevice3.remote.userspace_tunnel import UserspaceRsdTunnel
         from pymobiledevice3.services.dvt.instruments.device_info import DeviceInfo
@@ -434,8 +430,6 @@ class Monitor:
                     proc_supported = set(await info.sysmon_process_attributes())
                     sys_supported = set(await info.sysmon_system_attributes())
                 sys_attrs = [a for a in SYSMON_SYSTEM_ATTRS if a in sys_supported]
-                # 每次建隧道时 pymobiledevice3 会重新设回 1 ms，所以每个会话都要改一次
-                tcp__constants.TCP__DELAYED_ACK__DELAY_MS = STREAM_ACK_DELAY_MS
                 # 试过「只有文字条时只订阅 pid、5 秒一次」的精简模式：手机整机 CPU 测不出差别（低于手机自身波动），
                 # 所以只保留这一种模式
                 await self._sample(dvt, [a for a in SYSMON_PROCESS_ATTRS if a in proc_supported], sys_attrs,
@@ -446,9 +440,6 @@ class Monitor:
         from pymobiledevice3.services.dvt.instruments.sysmontap import Sysmontap
 
         tap = Sysmontap(dvt, proc_attrs, sys_attrs, interval_ms=interval)
-        # pymobiledevice3 把输出频率 ur 写死成 1 ms，手机每秒推约 2000 条心跳，
-        # DTServiceHub 因此占单核 ~20%。改成与采样间隔一致后降到 ~1.4%，数据刷新不变。
-        tap._config["ur"] = interval
         proc_fields = list(tap.process_attributes_cls.__dataclass_fields__)
         sys_fields = list(tap.system_attributes_cls.__dataclass_fields__)
         async with tap as sysmon:

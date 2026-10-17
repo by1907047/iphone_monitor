@@ -58,7 +58,7 @@ Run `start.bat` (no console window). `build_exe.bat` builds `dist\iPhoneMonitor\
 | Taskbar layout | Windows UI Automation (Windows 11 taskbar buttons are XAML) |
 | Bluetooth audio | `Windows.Media.Audio.AudioPlaybackConnection` |
 
-Built on [pymobiledevice3](https://github.com/doronz88/pymobiledevice3). Two of its defaults were tuned for continuous monitoring: the `sysmontap` output rate (1 ms → sampling interval, which cut `DTServiceHub` on the phone from ~20% to ~1% of a core) and the userspace tunnel's delayed-ACK timer once streaming starts (1 ms → 100 ms, ~6% → ~1% of a core on the PC).
+Built on [pymobiledevice3](https://github.com/doronz88/pymobiledevice3). Two continuous-monitoring costs found while building this were fixed upstream in pymobiledevice3 11.33.1 / pmd-pytcp 0.3.8 ([#2037](https://github.com/doronz88/pymobiledevice3/issues/2037), [#2038](https://github.com/doronz88/pymobiledevice3/issues/2038)): `sysmontap` emitting every 1 ms (`DTServiceHub` on the phone ~20% → ~3% of a core) and the tunnel's delayed-ACK timer re-arming forever (~4% → ~1% of a core on the PC).
 
 ## Privacy
 
