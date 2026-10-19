@@ -228,6 +228,8 @@ EN = {
     "连接失败": "Connection failed",
     "{reason}，稍后重试": "{reason}, retrying soon",
     "连接失败，稍后重试": "Connection failed, retrying soon",
+    "连接超时": "Connection timed out",
+    "重新连接手机声音": "Reconnect iPhone audio",
 }
 
 _load()

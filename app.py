@@ -33,7 +33,7 @@ from taskbar_strip import TaskbarStrip
 from ui_common import charge_state, enable_per_monitor_dpi, fmt, taskbar_dpi
 
 APP_NAME = "iPhoneMonitor"
-__version__ = "1.3.1"
+__version__ = "1.3.2"
 HERE = Path(__file__).resolve().parent
 SETTINGS_FILE = Path(os.environ.get("APPDATA", HERE)) / APP_NAME / "settings.json"
 DEFAULT_SETTINGS = {
@@ -339,6 +339,7 @@ class App:
         self.insights = Insights(lambda: int(self.settings["charge_limit"]))
         self.bt = BluetoothAudio(lambda: self.monitor.snapshot().name, enabled=bool(self.settings["bt_audio"]))
         self.bt_was_connected = False
+        self.usb_was_connected = False
         self.insight_alerted: set[str] = set()
         self.root.title(f"{tr('iPhone 状态')} · v{__version__}")
         self.strip = TaskbarStrip(self.root, on_left_click=self.window.toggle, on_right_click=self.show_strip_menu)
@@ -430,6 +431,8 @@ class App:
             ])),
             item(tr("手机声音转到电脑（蓝牙）"), lambda: self.set_bt_audio(not self.settings["bt_audio"]),
                  checked=lambda _i: bool(self.settings["bt_audio"])),
+            item(tr("重新连接手机声音"), lambda: self.bt.reconnect(),
+                 enabled=lambda _i: bool(self.settings["bt_audio"])),
             item(tr("刷新间隔"), pystray.Menu(*[interval_item(tr("{n} 秒", n=n), float(n)) for n in (1, 2, 5, 10)])),
             item(LANGUAGE_MENU, pystray.Menu(*[
                 item(LANGUAGE_LABEL.get(code, label), (lambda c=code: lambda: self.set_language(c))(),
@@ -523,6 +526,7 @@ class App:
         menu.add_command(label=tr("显示 / 隐藏详情"), command=self.window.toggle)
         menu.add_checkbutton(label=tr("手机声音转到电脑（蓝牙）"), variable=self.menu_vars["bt_audio"],
                              command=lambda: self.set_bt_audio(self.menu_vars["bt_audio"].get()))
+        menu.add_command(label=tr("重新连接手机声音"), command=self.bt.reconnect)
         menu.add_separator()
         menu.add_checkbutton(label=tr("第二行显示 CPU / 内存"), variable=v["strip_cpu"],
                              command=lambda: self.set_strip_cpu(v["strip_cpu"].get()))
@@ -684,6 +688,10 @@ class App:
         self.icon.update_menu()
 
     def check_bt_audio(self) -> None:
+        usb = self.monitor.snapshot().connected
+        if usb and not self.usb_was_connected and self.bt.enabled and not self.bt.connected:
+            self.bt.kick()  # 手机刚插上 USB，人就在电脑旁：蓝牙音频没连上的话马上重试
+        self.usb_was_connected = usb
         connected = self.bt.connected
         if connected and not self.bt_was_connected:
             self.notify(tr("手机声音会从电脑播放（{name}）。没声音的话，在 iPhone 控制中心的音频输出里选这台电脑。",

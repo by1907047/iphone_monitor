@@ -2,6 +2,8 @@
 
 用的是 Windows 10 2004+ 自带的 AudioPlaybackConnection（A2DP Sink），不需要第三方应用。
 后台线程跑一个 asyncio 循环：开着时连不上就每隔一段时间重试，断开后自动重连。
+建立连接的两步各有超时：手机半在线时系统可能一直不回应，不设超时就会卡住、再也不重试
+（以前只有打开系统的声音设置、让它重新枚举设备，卡住的请求才会走下去）。
 """
 
 import asyncio
@@ -13,7 +15,8 @@ from i18n import tr
 
 log = logging.getLogger(__name__)
 
-RETRY_MIN, RETRY_MAX = 10.0, 60.0  # 连不上时的重试间隔（秒），逐步拉长
+RETRY_MIN, RETRY_MAX = 10.0, 30.0  # 连不上时的重试间隔（秒），逐步拉长
+STEP_TIMEOUT = 20.0  # start / open 各自最多等这么久
 
 
 class BluetoothAudio:
@@ -26,6 +29,8 @@ class BluetoothAudio:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._wake: Optional[asyncio.Event] = None
         self._stop = False
+        self._force = False  # 手动「重新连接」：断开现有连接并马上重连
+        self._last_failure = ""
         threading.Thread(target=self._thread_main, name="bt-audio", daemon=True).start()
 
     # ---- 界面线程接口 ----
@@ -39,6 +44,15 @@ class BluetoothAudio:
 
     def stop(self) -> None:
         self._stop = True
+        self._signal()
+
+    def reconnect(self) -> None:
+        """右键菜单「重新连接手机声音」：不管现在什么状态，断开后立刻重连。"""
+        self._force = True
+        self._signal()
+
+    def kick(self) -> None:
+        """手机刚通过 USB 连上电脑：人就在旁边，没连上的话马上重试一次，不等退避时间。"""
         self._signal()
 
     @property
@@ -79,6 +93,11 @@ class BluetoothAudio:
         self._loop, self._wake = asyncio.get_running_loop(), asyncio.Event()
         retry = RETRY_MIN
         while not self._stop:
+            if self._force:
+                self._force = False
+                self._close()
+                retry = RETRY_MIN
+                log.info("蓝牙音频：手动重新连接")
             if not self._enabled:
                 self._close()
                 self.status = tr("已关闭")
@@ -109,8 +128,15 @@ class BluetoothAudio:
                 if conn is None:
                     raise RuntimeError("无法创建连接")
                 conn.add_state_changed(lambda _sender, _args: self._signal())
-                await conn.start_async()
-                result = await conn.open_async()
+                try:
+                    await asyncio.wait_for(_await(conn.start_async()), STEP_TIMEOUT)
+                    result = await asyncio.wait_for(_await(conn.open_async()), STEP_TIMEOUT)
+                except asyncio.TimeoutError:
+                    conn.close()
+                    self._failed("timeout", tr("连接超时"))
+                    await self._wait(retry)
+                    retry = min(retry * 2, RETRY_MAX)
+                    continue
                 if result.status == AudioPlaybackConnectionOpenResultStatus.SUCCESS:
                     # open 返回成功时状态还是 CLOSED，约 0.3 秒后才变成 OPENED；等它变过来再判断
                     for _ in range(50):
@@ -120,20 +146,26 @@ class BluetoothAudio:
                     self._conn, self.device_name = conn, device.name
                     self.status = tr("已连接 {name}", name=device.name)
                     log.info("蓝牙音频已连接：%s", device.name)
-                    retry = RETRY_MIN
+                    retry, self._last_failure = RETRY_MIN, ""
                     continue
                 conn.close()
                 reason = {
                     AudioPlaybackConnectionOpenResultStatus.REQUEST_TIMED_OUT: tr("手机不在附近或蓝牙未开"),
                     AudioPlaybackConnectionOpenResultStatus.DENIED_BY_SYSTEM: tr("被系统拒绝"),
                 }.get(result.status, tr("连接失败"))
-                self.status = tr("{reason}，稍后重试", reason=reason)
+                self._failed(f"open status {result.status.name}", reason)
             except Exception as exc:  # noqa: BLE001 - 任何错误都稍后重试
-                log.info("蓝牙音频连接失败: %r", exc)
-                self.status = tr("连接失败，稍后重试")
+                self._failed(repr(exc), tr("连接失败"))
             await self._wait(retry)
             retry = min(retry * 2, RETRY_MAX)
         self._close()
+
+    def _failed(self, code: str, reason: str) -> None:
+        """连接失败：更新状态；原因变了才写日志，免得每 30 秒刷一行。"""
+        self.status = tr("{reason}，稍后重试", reason=reason)
+        if code != self._last_failure:
+            log.info("蓝牙音频连接失败：%s", code)
+            self._last_failure = code
 
     def _close(self) -> None:
         if self._conn is not None:
@@ -144,3 +176,7 @@ class BluetoothAudio:
             log.info("蓝牙音频已断开")
             self._conn = None
             self.device_name = ""
+
+
+async def _await(operation):
+    return await operation
