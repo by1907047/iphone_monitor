@@ -30,10 +30,10 @@ from insights import CHARGE_LIMITS, ChargeInsight, Insights
 from bt_audio import BluetoothAudio
 from detail_window import DetailWindow
 from taskbar_strip import TaskbarStrip
-from ui_common import charge_state, fmt
+from ui_common import charge_state, enable_per_monitor_dpi, fmt, taskbar_dpi
 
 APP_NAME = "iPhoneMonitor"
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 HERE = Path(__file__).resolve().parent
 SETTINGS_FILE = Path(os.environ.get("APPDATA", HERE)) / APP_NAME / "settings.json"
 DEFAULT_SETTINGS = {
@@ -74,7 +74,8 @@ def setup_logging() -> None:
 SHOW_EVENT = f"Local\\{APP_NAME}.Show"  # 再次启动时用它通知已在运行的实例打开详情窗口
 
 
-RESTART_ARG = "--restart"  # 切换语言后重启：新进程等旧进程退出再接手
+RESTART_ARG = "--restart"  # 切换语言、显示缩放变化后重启：新进程等旧进程退出再接手
+SHOW_ARG = "--show"  # 重启后直接打开详情窗口
 RESTART_WAIT_SECONDS = 15
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 _kernel32.CreateMutexW.restype = ctypes.c_void_p
@@ -101,11 +102,12 @@ def wait_single_instance(seconds: float) -> bool:
     return True
 
 
-def restart_command() -> list[str]:
+def restart_command(show: bool) -> list[str]:
+    args = [RESTART_ARG] + ([SHOW_ARG] if show else [])
     if FROZEN:
-        return [sys.executable, RESTART_ARG]
+        return [sys.executable, *args]
     pythonw = Path(sys.executable).with_name("pythonw.exe")
-    return [str(pythonw if pythonw.exists() else sys.executable), str(HERE / "app.py"), RESTART_ARG]
+    return [str(pythonw if pythonw.exists() else sys.executable), str(HERE / "app.py"), *args]
 
 
 def signal_running_instance() -> None:
@@ -171,6 +173,7 @@ LANGUAGE_MENU = "语言 / Language"
 LANGUAGE_LABEL = {"auto": "跟随系统 / System default"}
 TICK_VISIBLE_MS = 500
 TICK_IDLE_MS = 1000
+DPI_SETTLE_SECONDS = 3
 TETHER_CHECK_SECONDS = 15
 # iPhone 开着个人热点时，USB 网卡会拿到 172.20.10.x 并可能抢走默认路由。
 # 只在外网流量真的走这块网卡时才算「接管」：调高了网卡跃点数的电脑上热点在但不生效，不报警。
@@ -323,6 +326,11 @@ class App:
             usb_only=bool(self.settings["usb_only"]),
         )
         self.root = tk.Tk()
+        # 界面按任务栏所在屏幕的缩放来画（Tk 的字号是磅，换算比例跟着 DPI）；变了就重启重新布局
+        self.dpi = taskbar_dpi()
+        self.root.tk.call("tk", "scaling", self.dpi / 72)
+        self.dpi_changed_since: Optional[float] = None
+        log.info("任务栏所在屏幕 %s DPI（缩放 %d%%）", self.dpi, round(self.dpi / 96 * 100))
         # pythonw 下没有 stderr，Tk 回调里的异常默认会被吞掉，记到日志里
         self.root.report_callback_exception = lambda *exc: log.error("界面回调出错", exc_info=exc)
         self.window = DetailWindow(self.root, self.monitor, self.settings, on_usb_only=self.set_usb_only,
@@ -695,12 +703,12 @@ class App:
             return
         self.settings["language"] = code
         save_settings(self.settings)
-        self.ui(self.restart)
+        self.ui(lambda: self.restart("切换语言", show=True))
 
-    def restart(self) -> None:
-        log.info("切换语言，重启程序")
+    def restart(self, reason: str, show: bool) -> None:
+        log.info("%s，重启程序", reason)
         try:
-            subprocess.Popen(restart_command(), close_fds=True)
+            subprocess.Popen(restart_command(show), close_fds=True)
         except OSError as exc:
             log.warning("重启失败: %r", exc)
             return
@@ -715,7 +723,21 @@ class App:
             except Exception:  # noqa: BLE001
                 log.exception("界面任务出错")
 
+    def check_dpi(self) -> bool:
+        """显示缩放或任务栏所在屏幕变了（接显示器、改缩放比例），稳定 3 秒后重启按新尺寸布局。"""
+        dpi = taskbar_dpi()
+        if dpi == self.dpi:
+            self.dpi_changed_since = None
+            return False
+        self.dpi_changed_since = self.dpi_changed_since or time.time()
+        if time.time() - self.dpi_changed_since < DPI_SETTLE_SECONDS:
+            return False
+        self.restart(f"显示缩放变了（{self.dpi} → {dpi} DPI）", show=self.window.visible)
+        return True
+
     def tick(self) -> None:
+        if self.check_dpi():
+            return  # 正在退出
         self.drain_tasks()
         self.check_tethering()
         self.check_bt_audio()
@@ -785,10 +807,7 @@ class App:
 
 
 def main() -> None:
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
-    except (AttributeError, OSError):
-        pass
+    enable_per_monitor_dpi()
     setup_logging()
     log.info("iPhone Monitor %s 启动（%s）", __version__, "exe" if FROZEN else "源码")
     restarted = RESTART_ARG in sys.argv
@@ -796,7 +815,7 @@ def main() -> None:
         log.info("已有实例在运行，通知它打开详情窗口")
         signal_running_instance()
         return
-    App().run(show_window=restarted)  # 换完语言直接把详情窗口打开，让人看到效果
+    App().run(show_window=SHOW_ARG in sys.argv)  # 换完语言直接把详情窗口打开，让人看到效果
 
 
 if __name__ == "__main__":

@@ -24,6 +24,34 @@ def windows_dark_mode() -> bool:
         return False
 
 
+def enable_per_monitor_dpi() -> None:
+    """按显示器 DPI 绘制。必须在创建任何窗口之前调用。
+
+    「系统 DPI 感知」用的是登录时定下的系统 DPI：笔记本屏幕是 175%、外接显示器是 100% 时，
+    界面会在 100% 的屏幕上按 175% 画，大一圈。
+    """
+    try:
+        if ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):  # PER_MONITOR_AWARE_V2
+            return
+    except (AttributeError, OSError):
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_AWARE（Windows 8.1+）
+    except (AttributeError, OSError):
+        pass
+
+
+def taskbar_dpi() -> int:
+    """任务栏所在显示器的 DPI：文字条嵌在任务栏里，详情窗口也贴在这块屏幕的角上。"""
+    user32 = ctypes.windll.user32
+    try:
+        hwnd = user32.FindWindowW("Shell_TrayWnd", None)
+        dpi = user32.GetDpiForWindow(hwnd) if hwnd else 0
+    except (AttributeError, OSError):
+        dpi = 0
+    return dpi or 96
+
+
 def work_area() -> tuple[int, int, int, int]:
     rect = ctypes.wintypes.RECT()
     ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0)  # SPI_GETWORKAREA
