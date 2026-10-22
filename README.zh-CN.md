@@ -49,6 +49,12 @@ pip install -r requirements.txt
 
 双击 `start.bat` 运行（后台运行，没有控制台窗口）。双击 `build_exe.bat` 打包成 `dist\iPhoneMonitor\iPhoneMonitor.exe` 和 `dist\iPhoneMonitor.zip`；它会建一个独立的 `.build-venv` 环境，只装需要的库。打 `v*` 标签后，GitHub Actions 会自动打包并发布到 Releases。
 
+## 相关文章与项目
+
+- 项目主页：https://by1907047.github.io/iphone_monitor/
+- B站专栏：[插着电脑 iPhone 还掉电？我写了个小工具把原因找出来](https://www.bilibili.com/opus/1260161164381257800)
+- 姊妹项目：[apple-usb-ncm](https://github.com/by1907047/apple-usb-ncm)，一根 USB-C 线让 Mac 和 Windows 直连的网卡驱动
+
 ## 详细说明
 
 ### 用法

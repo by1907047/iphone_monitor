@@ -65,6 +65,12 @@ Built on [pymobiledevice3](https://github.com/doronz88/pymobiledevice3). Two con
 
 Everything stays on your PC; there is no telemetry. The only network access is downloading the developer disk image from [doronz88/DeveloperDiskImage](https://github.com/doronz88/DeveloperDiskImage) and having it personalized by Apple's signing server — the same thing Xcode does — and only if you enable CPU / memory monitoring.
 
+## More
+
+- Project page: https://by1907047.github.io/iphone_monitor/
+- Write-up (Chinese, Bilibili): [插着电脑 iPhone 还掉电？我写了个小工具把原因找出来](https://www.bilibili.com/opus/1260161164381257800)
+- Sibling project: [apple-usb-ncm](https://github.com/by1907047/apple-usb-ncm), a Windows driver for direct Mac–PC networking over one USB-C cable
+
 ## License
 
 [GPL-3.0-or-later](LICENSE). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for bundled components.

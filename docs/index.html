@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>iPhone Monitor：在 Windows 任务栏看 iPhone 电量、功耗和 CPU</title>
+<meta name="description" content="开源免费的 Windows 小工具：USB 连接 iPhone，在任务栏实时显示电量、整机功耗、CPU 和内存，诊断插电仍掉电、估算线阻，按天统计电池损耗。A Windows taskbar monitor for a USB-connected iPhone: battery, power draw, CPU/memory, charging diagnosis, battery wear.">
+<meta name="keywords" content="iPhone 电量, iPhone 功耗, iPhone 插电掉电, iPhone 电池健康, 循环次数, Windows 任务栏, iPhone battery monitor Windows, iPhone power draw, pymobiledevice3">
+<link rel="canonical" href="https://by1907047.github.io/iphone_monitor/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="iPhone Monitor：在 Windows 任务栏看 iPhone 电量、功耗和 CPU">
+<meta property="og:description" content="USB 连接、免越狱。插电仍掉电诊断、线阻估算、电池损耗统计、蓝牙听手机声音。开源 GPL-3.0。">
+<meta property="og:url" content="https://by1907047.github.io/iphone_monitor/">
+<meta property="og:image" content="https://by1907047.github.io/iphone_monitor/images/social-preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "iPhone Monitor",
+ "operatingSystem": "Windows 10, Windows 11", "applicationCategory": "UtilitiesApplication",
+ "description": "Windows taskbar monitor for a USB-connected iPhone: battery, power draw, CPU/memory, charging diagnosis, battery wear.",
+ "url": "https://by1907047.github.io/iphone_monitor/", "downloadUrl": "https://github.com/by1907047/iphone_monitor/releases/latest",
+ "license": "https://www.gnu.org/licenses/gpl-3.0.html", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}
+</script>
+<style>
+  :root { --bg: #f5f6f8; --card: #fff; --fg: #18181b; --muted: #5f6368; --accent: #005fb8; --line: #e3e5e8; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #18181b; --card: #222226; --fg: #f2f2f2; --muted: #a0a0a8; --accent: #60cdff; --line: #34343a; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.7 "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 40px 16px 64px; }
+  h1 { font-size: 34px; line-height: 1.25; margin: 0 0 8px; }
+  h2 { font-size: 22px; margin: 40px 0 12px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .btns a { display: inline-block; margin: 0 8px 8px 0; padding: 8px 18px; border-radius: 8px; text-decoration: none; border: 1px solid var(--line); color: var(--fg); background: var(--card); }
+  .btns a.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  img { max-width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--line); }
+  .shots { display: flex; gap: 16px; flex-wrap: wrap; }
+  .shots img { flex: 1 1 300px; min-width: 0; }
+  ul { padding-left: 22px; }
+  li { margin: 4px 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 20px; }
+  a { color: var(--accent); }
+  footer { margin-top: 48px; color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>iPhone Monitor</h1>
+  <p class="sub">在 Windows 任务栏实时看 USB 连接的 iPhone 电量、功耗、CPU 和内存，并找出「插着线为什么还在掉电」。不用越狱，手机上不装任何 App。开源免费（GPL-3.0），中英双语。</p>
+  <p class="btns">
+    <a class="primary" href="https://github.com/by1907047/iphone_monitor/releases/latest">下载最新版（Windows）</a>
+    <a href="https://github.com/by1907047/iphone_monitor">GitHub 源码</a>
+    <a href="https://www.bilibili.com/opus/1260161164381257800">B站专栏：用它发现的几件事</a>
+  </p>
+  <img src="images/taskbar-strip.png" alt="任务栏文字条：充电中、到充电上限、插着线仍在掉电">
+
+  <h2>能做什么</h2>
+  <ul>
+    <li><b>任务栏文字条</b>：手机图标、电量、整机功耗，第二行是手机 CPU 和内存；电池在放电时图标变红，插着线也一样。</li>
+    <li><b>详情窗口</b>：整机耗电、外部供电（电压 × 电流）、电池充放电、10 分钟曲线、占用最高的进程。</li>
+    <li><b>供电诊断</b>：估算电源实际电压和线路电阻，判断是线不好、电脑 USB 口不行，还是手机负载太高。</li>
+    <li><b>电池损耗统计</b>：用手机自己的能量计数，按天统计插电时、拔线时各放了多少电，看清循环次数是怎么涨的。</li>
+    <li><b>其他</b>：充电上限与预计充满时间、蓝牙把手机声音转到电脑播放、iPhone 热点接管电脑网络时提醒。</li>
+  </ul>
+  <div class="shots">
+    <img src="images/details.png" alt="详情窗口：整机耗电、外部供电、电池、CPU 和内存">
+    <img src="images/wear.png" alt="电池损耗：近 7 天每天插电时和拔线时的放电量">
+  </div>
+
+  <h2>怎么用</h2>
+  <div class="card">
+    <ol>
+      <li>在微软商店安装 <b>Apple Devices</b>。</li>
+      <li>下载 <a href="https://github.com/by1907047/iphone_monitor/releases/latest">iPhoneMonitor.zip</a>，解压后运行 iPhoneMonitor.exe。</li>
+      <li>数据线连接 iPhone，解锁并点「信任此电脑」。</li>
+      <li>想看 CPU / 内存：在 iPhone 上打开开发者模式（可选）。</li>
+    </ol>
+    <p>需要 Windows 10/11 和 iOS 17 及以上。所有数据只存在本机，没有任何上报。</p>
+  </div>
+
+  <h2 lang="en">In English</h2>
+  <p lang="en">iPhone Monitor is a free, open-source Windows tool that shows a USB-connected iPhone's battery level, whole-phone power draw, CPU and memory right in the Windows 11 taskbar. It explains why an iPhone drains while plugged in (supply voltage and cable resistance estimates, weak USB ports, load spikes), tracks daily battery wear from the phone's own energy counters, and can play iPhone audio on the PC over Bluetooth. No jailbreak, nothing to install on the phone. Built on <a href="https://github.com/doronz88/pymobiledevice3">pymobiledevice3</a>. <a href="https://github.com/by1907047/iphone_monitor#readme">Read the README</a>.</p>
+
+  <h2>姊妹项目</h2>
+  <p><a href="https://by1907047.github.io/apple-usb-ncm/">Apple USB NCM 驱动</a>：一根 USB-C 线让 Mac 和 Windows 直连传文件，不用 USB 转网口。</p>
+
+  <footer>iPhone、iOS 是 Apple Inc. 的商标；本项目与 Apple 无关。</footer>
+</main>
+</body>
+</html>
