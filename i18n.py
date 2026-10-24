@@ -161,6 +161,7 @@ EN = {
     "负载高 {pct}%": "high load {pct}%",
     # ---- 详情窗口
     "整机耗电": "Phone load",
+    "legend|整机耗电": "Load",
     "外部供电": "Power in",
     "电池": "Battery",
     "CPU · 内存": "CPU · Memory",
@@ -230,6 +231,27 @@ EN = {
     "连接失败，稍后重试": "Connection failed, retrying soon",
     "连接超时": "Connection timed out",
     "重新连接手机声音": "Reconnect iPhone audio",
+    # ---- 本机电池
+    "本机电池": "Laptop battery",
+    "电池功率": "Battery power",
+    "电压": "Voltage",
+    "循环次数": "Cycle count",
+    "满电容量": "Full charge",
+    "设计容量": "Design capacity",
+    "当前容量": "Remaining",
+    "电源": "Power",
+    "已接电源": "Plugged in",
+    "● 已接电源": "● Plugged in",
+    "● 使用电池": "● On battery",
+    "插着电源仍在耗电池": "Draining while plugged in",
+    "已接电源 · 未充电": "Plugged in · not charging",
+    "约 {time}充满": "Full in {time}",
+    "剩余约 {time}": "{time} left",
+    "设计 {wh} Wh": "{wh} Wh design",
+    "还没有数据。程序运行时会自动统计。": "No data yet. It is collected while the app runs.",
+    "电脑插着电源，电池仍在以 {w} W 放电。充电器功率可能不够，或者接在了扩展坞、低功率接口上。":
+        "The laptop is plugged in but its battery is discharging at {w} W. The charger may be too weak, or it is on a dock or low-power port.",
+    "电脑插电仍掉电": "Laptop draining while plugged in",
 }
 
 _load()

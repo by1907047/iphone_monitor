@@ -27,13 +27,14 @@ from PIL import Image, ImageDraw, ImageFont
 from i18n import LANGUAGES, tr
 from monitor import FROZEN, LOG_DIR, DevStats, Monitor, Snapshot
 from insights import CHARGE_LIMITS, ChargeInsight, Insights
+from laptop_battery import LaptopBattery, LaptopStatus
 from bt_audio import BluetoothAudio
 from detail_window import DetailWindow
 from taskbar_strip import TaskbarStrip
 from ui_common import charge_state, enable_per_monitor_dpi, fmt, taskbar_dpi
 
 APP_NAME = "iPhoneMonitor"
-__version__ = "1.3.2"
+__version__ = "1.4.0"
 HERE = Path(__file__).resolve().parent
 SETTINGS_FILE = Path(os.environ.get("APPDATA", HERE)) / APP_NAME / "settings.json"
 DEFAULT_SETTINGS = {
@@ -173,6 +174,9 @@ LANGUAGE_MENU = "语言 / Language"
 LANGUAGE_LABEL = {"auto": "跟随系统 / System default"}
 TICK_VISIBLE_MS = 500
 TICK_IDLE_MS = 1000
+LAPTOP_FAST_SECONDS, LAPTOP_IDLE_SECONDS = 2, 20  # 本机电池：页面开着时 2 秒读一次，否则 20 秒（够统计损耗和提醒）
+LAPTOP_DRAIN_W = 1.0  # 插着电源时电池放电超过这么多才算「插电仍掉电」
+LAPTOP_DRAIN_ALERT_SECONDS = 120
 DPI_SETTLE_SECONDS = 3
 TETHER_CHECK_SECONDS = 15
 # iPhone 开着个人热点时，USB 网卡会拿到 172.20.10.x 并可能抢走默认路由。
@@ -333,9 +337,13 @@ class App:
         log.info("任务栏所在屏幕 %s DPI（缩放 %d%%）", self.dpi, round(self.dpi / 96 * 100))
         # pythonw 下没有 stderr，Tk 回调里的异常默认会被吞掉，记到日志里
         self.root.report_callback_exception = lambda *exc: log.error("界面回调出错", exc_info=exc)
+        self.laptop = LaptopBattery()
+        self.laptop_read_at = 0.0
+        self.laptop_drain_since: Optional[float] = None
+        self.laptop_alerted = False
         self.window = DetailWindow(self.root, self.monitor, self.settings, on_usb_only=self.set_usb_only,
                                    charge_limit=lambda: int(self.settings["charge_limit"]),
-                                   dock_side=self.window_side)
+                                   dock_side=self.window_side, laptop=self.laptop)
         self.insights = Insights(lambda: int(self.settings["charge_limit"]))
         self.bt = BluetoothAudio(lambda: self.monitor.snapshot().name, enabled=bool(self.settings["bt_audio"]))
         self.bt_was_connected = False
@@ -670,6 +678,33 @@ class App:
         self.shown_tether = ip
         self.last_ts = -1.0  # 刷新提示文字
 
+    def poll_laptop(self) -> None:
+        """本机电池：统计损耗、插电仍掉电提醒，详情窗口开在「本机电池」页时刷新界面。"""
+        if not self.laptop.present:
+            return
+        fast = self.window.visible and self.window.page_name == "laptop"
+        if time.time() - self.laptop_read_at < (LAPTOP_FAST_SECONDS if fast else LAPTOP_IDLE_SECONDS):
+            return
+        self.laptop_read_at = time.time()
+        s = self.laptop.read()
+        if not s.present:
+            return
+        self.insights.wear.feed_laptop(s)
+        self.check_laptop_drain(s)
+        if fast:
+            self.window.update_laptop(s)
+
+    def check_laptop_drain(self, s: LaptopStatus) -> None:
+        draining = s.online and s.rate_w is not None and s.rate_w < -LAPTOP_DRAIN_W
+        if not draining:
+            self.laptop_drain_since, self.laptop_alerted = None, False
+            return
+        self.laptop_drain_since = self.laptop_drain_since or time.time()
+        if not self.laptop_alerted and time.time() - self.laptop_drain_since >= LAPTOP_DRAIN_ALERT_SECONDS:
+            self.notify(tr("电脑插着电源，电池仍在以 {w} W 放电。充电器功率可能不够，或者接在了扩展坞、低功率接口上。",
+                           w=f"{-s.rate_w:.1f}"), tr("电脑插电仍掉电"))
+            self.laptop_alerted = True
+
     def check_charge_alerts(self, ins: ChargeInsight) -> None:
         """插着线掉电 / 慢充持续一段时间后各提醒一次；情况消失后才会再次提醒。"""
         if ins.alert and ins.alert not in self.insight_alerted:
@@ -749,6 +784,7 @@ class App:
         self.drain_tasks()
         self.check_tethering()
         self.check_bt_audio()
+        self.poll_laptop()
         if self.tray_ready:
             self.sync_tray()
         if self.show_event and ctypes.windll.kernel32.WaitForSingleObject(ctypes.c_void_p(self.show_event), 0) == 0:

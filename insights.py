@@ -368,6 +368,31 @@ class WearTracker:
             if limit:
                 day["limit_mj"] += discharge * share
 
+    def feed_laptop(self, s) -> None:
+        """笔记本电池：没有累计计数，用相邻两次读数之间剩余容量的下降算放电、上升算充入（mWh → mW·s）。
+
+        程序没运行、电脑睡眠的那段时间也一样按首尾容量差算；两头都接着电源才算插电时。
+        """
+        if not s.present or s.capacity_mwh is None:
+            return
+        key, now = s.key, s.timestamp or time.time()
+        cur = dict(ts=now, cap=s.capacity_mwh, online=s.online)
+        prev, self.last[key] = self.last.get(key), cur
+        today = self._day(key, time.strftime("%Y-%m-%d", time.localtime(now)))
+        today["cycles"], today["design_mwh"] = s.cycles, s.design_mwh
+        self.dirty = True
+        if prev and "cap" in prev and now > prev["ts"]:
+            delta_mj = (cur["cap"] - prev["cap"]) * 3600
+            bucket = "plugged_mj" if prev["online"] and cur["online"] else "unplugged_mj"
+            for date, share in _split_days(prev["ts"], now):
+                day = self._day(key, date)
+                if delta_mj < 0:
+                    day[bucket] += -delta_mj * share
+                else:
+                    day["charge_mj"] += delta_mj * share
+        if now - self.saved_at >= WEAR_SAVE_SECONDS:
+            self.save()
+
     def _day(self, key: str, date: str) -> dict:
         days = self.days.setdefault(key, {})
         if date not in days:
@@ -445,6 +470,7 @@ def load_wear(device: Optional[str], days: int = 7) -> list[tuple[str, dict]]:
     """最近几天的放电统计，最新的在前。"""
     data = _read_json(WEAR_FILE).get("days", {})
     if device is None:
-        device = max(data, key=lambda d: max(data[d], default=""), default=None)  # 没连着就看最近有数据的设备
+        phones = [d for d in data if not d.startswith("laptop|")]
+        device = max(phones, key=lambda d: max(data[d], default=""), default=None)  # 没连着就看最近有数据的手机
     rows = data.get(device, {}) if device else {}
     return sorted(rows.items(), reverse=True)[:days]

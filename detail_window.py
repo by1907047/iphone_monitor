@@ -21,6 +21,7 @@ from typing import Callable, Optional
 
 from i18n import tr
 from insights import ChargeInsight, cycle_wh, device_key, load_sessions, load_wear
+from laptop_battery import LaptopBattery, LaptopStatus
 from monitor import DevStats, Monitor, Snapshot
 from ui_common import (
     FONT_NUM, FONT_UI, LOW_BATTERY, Palette, charge_state, fmt, format_minutes, power_source, windows_dark_mode,
@@ -47,8 +48,13 @@ class DetailWindow:
     def __init__(self, root: tk.Tk, monitor: Monitor, settings: dict,
                  on_usb_only: Optional[Callable[[bool], None]] = None,
                  charge_limit: Callable[[], int] = lambda: 100,
-                 dock_side: Callable[[], str] = lambda: "right") -> None:
+                 dock_side: Callable[[], str] = lambda: "right",
+                 laptop: Optional[LaptopBattery] = None) -> None:
         self.root, self.monitor, self.settings = root, monitor, settings
+        self.laptop = laptop if laptop and laptop.present else None
+        self.page_name = "phone"
+        self.lp_chart_mode = "power"
+        self._lp_slow_at = 0.0
         self._slow_at = 0.0
         self.charge_limit = charge_limit
         self.dock_side = dock_side  # 窗口贴哪个角：跟着任务栏文字条在左边还是右边
@@ -74,9 +80,13 @@ class DetailWindow:
         if icon.exists():
             root.iconbitmap(default=str(icon))  # default=… 让历史窗口等子窗口也用这个图标
 
+        if self.laptop:
+            self._build_switch()
+        self.page = self.phone_page = tk.Frame(root, bg=p.bg)
+        self.phone_page.pack(fill="x")
         self._build_header()
         self._build_hero()
-        self.banner_frame = tk.Frame(root, bg=p.bg)
+        self.banner_frame = tk.Frame(self.page, bg=p.bg)
         self.banner_frame.pack(fill="x", padx=self.pad)
         # Tk 的容器在最后一个子控件被移走后不会收缩；留一个 0 高的占位，提示条消失后窗口才能缩回去
         tk.Frame(self.banner_frame, height=0, bg=p.bg).pack(fill="x")
@@ -87,6 +97,11 @@ class DetailWindow:
         self._build_details()
         self._build_processes()
         self._build_footer()
+        self.laptop_page = None
+        if self.laptop:
+            self.page = self.laptop_page = tk.Frame(root, bg=p.bg)
+            self._build_laptop_page()
+            self.page = self.phone_page
         root.withdraw()
 
     # ================================================================ 构建
@@ -102,7 +117,7 @@ class DetailWindow:
 
     def _build_header(self) -> None:
         p = self.p
-        header = tk.Frame(self.root, bg=p.bg)
+        header = tk.Frame(self.page, bg=p.bg)
         header.pack(fill="x", padx=self.pad, pady=(self.pad, 0))
         left = tk.Frame(header, bg=p.bg)
         left.pack(side="left")
@@ -115,7 +130,7 @@ class DetailWindow:
 
     def _build_hero(self) -> None:
         p = self.p
-        hero = tk.Frame(self.root, bg=p.bg)
+        hero = tk.Frame(self.page, bg=p.bg)
         hero.pack(fill="x", padx=self.pad, pady=(self.d(4), self.d(2)))
         self.pct_label = self._label(hero, "--", size=24, font=FONT_NUM)
         self.pct_label.pack(side="left", anchor="w")
@@ -145,27 +160,31 @@ class DetailWindow:
         banner.pack(fill="x", pady=(self.d(4), 0))
 
     def _build_tiles(self) -> None:
+        self.tiles = self._tile_row((("load", tr("整机耗电")), ("input", tr("外部供电")),
+                                     ("battery", tr("电池")), ("stats", tr("CPU · 内存"))))
+
+    def _tile_row(self, specs) -> dict[str, tuple[tk.Label, tk.Label]]:
         p = self.p
         half = self.d(3)
-        row = tk.Frame(self.root, bg=p.bg)
+        row = tk.Frame(self.page, bg=p.bg)
         row.pack(fill="x", padx=self.pad - half, pady=(self.d(8), 0))
-        self.tiles: dict[str, tuple[tk.Label, tk.Label]] = {}
-        for col, (key, title) in enumerate((("load", tr("整机耗电")), ("input", tr("外部供电")),
-                                            ("battery", tr("电池")), ("stats", tr("CPU · 内存")))):
+        tiles: dict[str, tuple[tk.Label, tk.Label]] = {}
+        for col, (key, title) in enumerate(specs):
             card = self._card(row)
             card.grid(row=0, column=col, sticky="nsew", padx=half)
             row.grid_columnconfigure(col, weight=1, uniform="tiles")
-            self._label(card, title, size=8, color=p.muted, anchor="w").pack(fill="x", padx=self.d(8),
+            self._label(card, title, size=8, color=p.muted, anchor="w", width=1).pack(fill="x", padx=self.d(8),
                                                                              pady=(self.d(5), 0))
-            value = self._label(card, "—", size=11, font=FONT_NUM, anchor="w")
+            value = self._label(card, "—", size=11, font=FONT_NUM, anchor="w", width=1)
             value.pack(fill="x", padx=self.d(8))
-            sub = self._label(card, "", size=7, color=p.muted, anchor="w")
+            sub = self._label(card, "", size=7, color=p.muted, anchor="w", width=1)  # width=1：文字长了截断，不把整行撑宽
             sub.pack(fill="x", padx=self.d(8), pady=(0, self.d(5)))
-            self.tiles[key] = (value, sub)
+            tiles[key] = (value, sub)
+        return tiles
 
     def _build_chart(self) -> None:
         p = self.p
-        head = tk.Frame(self.root, bg=p.bg)
+        head = tk.Frame(self.page, bg=p.bg)
         head.pack(fill="x", padx=self.pad, pady=(self.d(8), self.d(3)))
         self.chart_title = self._label(head, tr("近 10 分钟"), size=9, bold=True)
         self.chart_title.pack(side="left")
@@ -178,14 +197,14 @@ class DetailWindow:
         self.legend = tk.Frame(head, bg=p.bg)
         self.legend.pack(side="right")
         self.chart_w, self.chart_h = self.width, self.d(78)
-        self.chart = tk.Canvas(self.root, width=self.chart_w, height=self.chart_h, bg=p.card,
+        self.chart = tk.Canvas(self.page, width=self.chart_w, height=self.chart_h, bg=p.card,
                                highlightthickness=1, highlightbackground=p.line)
         self.chart.pack(padx=self.pad)
         self._style_mode_buttons()
 
     def _build_details(self) -> None:
         p = self.p
-        card = self._card(self.root)
+        card = self._card(self.page)
         card.configure(pady=self.d(4))
         card.pack(fill="x", padx=self.pad, pady=(self.d(8), 0))
         self.details: dict[str, tk.Label] = {}
@@ -212,12 +231,12 @@ class DetailWindow:
 
     def _build_processes(self) -> None:
         p = self.p
-        head = tk.Frame(self.root, bg=p.bg)
+        head = tk.Frame(self.page, bg=p.bg)
         head.pack(fill="x", padx=self.pad, pady=(self.d(8), self.d(3)))
         self._label(head, tr("占用最高的进程"), size=9, bold=True).pack(side="left")
         self.proc_note = self._label(head, "", size=8, color=p.muted)
         self.proc_note.pack(side="right")
-        card = self._card(self.root)
+        card = self._card(self.page)
         card.pack(fill="x", padx=self.pad)
         self.proc_rows: list[tuple[tk.Label, tk.Canvas, tk.Label, tk.Label]] = []
         self.proc_bar_w = self.d(60)
@@ -237,7 +256,7 @@ class DetailWindow:
 
     def _build_footer(self) -> None:
         p = self.p
-        footer = tk.Frame(self.root, bg=p.bg)
+        self.footer = footer = tk.Frame(self.root, bg=p.bg)
         footer.pack(fill="x", padx=self.pad, pady=(self.d(8), self.pad))
         self.updated_label = self._label(footer, "", size=8, color=p.muted)
         self.updated_label.pack(side="left")
@@ -251,6 +270,8 @@ class DetailWindow:
 
     # ================================================================ 显示 / 隐藏
     def show(self) -> None:
+        if self.laptop and not self.monitor.snapshot().connected:
+            self.set_page("laptop")
         self.update(self.monitor.snapshot())
         self.update_dev(self.monitor.dev_stats())
         # 先透明显示（可见边框要显示后才量得到），贴好位置再显现，避免在旧位置闪一下
@@ -326,7 +347,7 @@ class DetailWindow:
                        highlightthickness=1 if active else 0, highlightbackground=p.line)
         for child in self.legend.winfo_children():
             child.destroy()
-        legend = {"power": ((tr("整机耗电"), p.orange), (tr("电池"), p.green)),
+        legend = {"power": ((tr("整机耗电", "legend"), p.orange), (tr("电池"), p.green)),
                   "stats": (("CPU", p.blue), (tr("内存"), p.purple)),
                   "wear": ((tr("插电时"), p.orange), (tr("拔线时"), p.blue))}[self.chart_mode]
         for name, color in legend:
@@ -419,7 +440,7 @@ class DetailWindow:
             disk = f"{free}{s.disk_total / 1e9:.0f} GB"
         dt["disk"].config(text=disk)
 
-        if s.timestamp:
+        if s.timestamp and self.page_name == "phone":
             self.updated_label.config(text=tr("更新于 {t}", t=time.strftime("%H:%M:%S", time.localtime(s.timestamp))))
         slow_due = time.time() - self._slow_at >= SLOW_REFRESH_SECONDS
         if slow_due:
@@ -477,7 +498,10 @@ class DetailWindow:
             self.draw_chart()
 
     def _tile(self, key: str, value: str, sub: str, color: Optional[str] = None) -> None:
-        v, s = self.tiles[key]
+        self._set_tile(self.tiles, key, value, sub, color)
+
+    def _set_tile(self, tiles: dict, key: str, value: str, sub: str, color: Optional[str] = None) -> None:
+        v, s = tiles[key]
         v.config(text=value, fg=color or self.p.fg)
         s.config(text=sub or " ")
 
@@ -516,12 +540,15 @@ class DetailWindow:
 
     def _draw_wear(self) -> None:
         """近 7 天每天的放电量，插电时 / 拔线时叠起来；单位是电池容量的百分比，方便和手机的「电池用量」对照。"""
-        p, c, s = self.p, self.chart, self.last_snapshot
-        c.delete("all")
-        w, h = self.chart_w, self.chart_h
+        s = self.last_snapshot
         rows = dict(load_wear(device_key(s) if s.connected else None, WEAR_DAYS))
         design = s.design_mah or next((d["design_mah"] for d in rows.values() if d.get("design_mah")), None)
-        per_cycle = cycle_wh(design)
+        self._draw_wear_bars(self.chart, rows, cycle_wh(design), tr("还没有数据。连着手机时会自动统计。"))
+
+    def _draw_wear_bars(self, c: tk.Canvas, rows: dict, per_cycle: Optional[float], empty_text: str) -> None:
+        p = self.p
+        c.delete("all")
+        w, h = self.chart_w, self.chart_h
         unit = 100 / per_cycle if per_cycle else 1.0  # Wh → 电池百分比；没有设计容量时直接显示 Wh
         today = datetime.date.today()
         dates = [(today - datetime.timedelta(days=i)).isoformat() for i in range(WEAR_DAYS - 1, -1, -1)]
@@ -530,7 +557,7 @@ class DetailWindow:
         small = (FONT_UI, 8)
         logged = [b for b in bars if b]
         if not any(sum(b) > 0 for b in logged):
-            c.create_text(w / 2, h / 2, text=tr("还没有数据。连着手机时会自动统计。"), fill=p.muted, font=small)
+            c.create_text(w / 2, h / 2, text=empty_text, fill=p.muted, font=small)
             return
 
         def fmt_v(v: float) -> str:
@@ -559,8 +586,8 @@ class DetailWindow:
             c.create_rectangle(x, y_un, x + bar_w, y_pl, fill=p.blue, width=0)
             c.create_text(x + bar_w / 2, y_un - self.d(2), anchor="s", text=fmt_v(sum(b)), fill=p.fg, font=small)
 
-    def _draw_series(self, first, second, colors, fixed=None, digits=1, unit="W") -> None:
-        p, c = self.p, self.chart
+    def _draw_series(self, first, second, colors, fixed=None, digits=1, unit="W", canvas=None) -> None:
+        p, c = self.p, canvas or self.chart
         c.delete("all")
         w, h = self.chart_w, self.chart_h
         pad_l, pad_r, pad_t, pad_b = self.d(34), self.d(8), self.d(7), self.d(7)
@@ -601,3 +628,194 @@ class DetailWindow:
                 coords.extend(xy(t, v))
             if len(coords) >= 4:
                 c.create_line(*coords, fill=color, width=width, smooth=True)
+
+    # ================================================================ 本机电池
+    def _build_switch(self) -> None:
+        """窗口顶部的「iPhone / 本机电池」切换。"""
+        p = self.p
+        bar = tk.Frame(self.root, bg=p.bg)
+        bar.pack(fill="x", padx=self.pad, pady=(self.d(8), 0))
+        self.page_buttons: dict[str, tk.Label] = {}
+        for name, text in (("phone", "iPhone"), ("laptop", tr("本机电池"))):
+            btn = self._label(bar, text, size=9, padx=self.d(10), pady=self.d(1), cursor="hand2")
+            btn.pack(side="left", padx=(0, self.d(4)))
+            btn.bind("<Button-1>", lambda _e, n=name: self.set_page(n))
+            self.page_buttons[name] = btn
+        self._style_page_buttons()
+
+    def _style_page_buttons(self) -> None:
+        p = self.p
+        for name, btn in getattr(self, "page_buttons", {}).items():
+            active = name == self.page_name
+            btn.config(bg=p.card if active else p.bg, fg=p.fg if active else p.muted,
+                       highlightthickness=1 if active else 0, highlightbackground=p.line)
+
+    def set_page(self, name: str) -> None:
+        if name == self.page_name or not self.laptop_page:
+            return
+        old, new = (self.phone_page, self.laptop_page) if name == "laptop" else (self.laptop_page, self.phone_page)
+        old.pack_forget()
+        new.pack(fill="x", before=self.footer)
+        self.page_name = name
+        self._style_page_buttons()
+        if name == "laptop":
+            self.update_laptop(self.laptop.read())
+        else:
+            self.update(self.monitor.snapshot())
+
+    def _build_laptop_page(self) -> None:
+        p, lp = self.p, {}
+        self.lp = lp
+        header = tk.Frame(self.page, bg=p.bg)
+        header.pack(fill="x", padx=self.pad, pady=(self.pad, 0))
+        left = tk.Frame(header, bg=p.bg)
+        left.pack(side="left")
+        self._label(left, tr("本机电池"), size=12, bold=True, anchor="w").pack(anchor="w")
+        lp["sub"] = self._label(left, " ", size=8, color=p.muted, anchor="w")
+        lp["sub"].pack(anchor="w")
+        lp["pill"] = self._label(header, size=8, padx=self.d(8), pady=self.d(2))
+        lp["pill"].pack(side="right", anchor="n", pady=(self.d(3), 0))
+
+        hero = tk.Frame(self.page, bg=p.bg)
+        hero.pack(fill="x", padx=self.pad, pady=(self.d(4), self.d(2)))
+        lp["pct"] = self._label(hero, "--", size=24, font=FONT_NUM)
+        lp["pct"].pack(side="left", anchor="w")
+        right = tk.Frame(hero, bg=p.bg)
+        right.pack(side="left", fill="x", expand=True, padx=(self.d(12), 0), pady=(self.d(6), 0))
+        lp["bar"] = tk.Canvas(right, width=self.bar_w, height=self.bar_h + self.d(6), bg=p.bg, highlightthickness=0)
+        lp["bar"].pack(anchor="w")
+        lp["state"] = self._label(right, size=9, anchor="w")
+        lp["state"].pack(anchor="w", pady=(self.d(2), 0))
+        lp["detail"] = self._label(right, size=8, color=p.muted, anchor="w")
+        lp["detail"].pack(anchor="w")
+
+        self.lp_tiles = self._tile_row((("rate", tr("电池功率")), ("voltage", tr("电压")),
+                                        ("health", tr("健康度")), ("cycles", tr("循环次数"))))
+
+        head = tk.Frame(self.page, bg=p.bg)
+        head.pack(fill="x", padx=self.pad, pady=(self.d(8), self.d(3)))
+        lp["chart_title"] = self._label(head, tr("近 10 分钟"), size=9, bold=True)
+        lp["chart_title"].pack(side="left")
+        self.lp_mode_buttons: dict[str, tk.Label] = {}
+        for mode, text in (("power", tr("功率")), ("wear", tr("电池损耗"))):
+            btn = self._label(head, text, size=8, padx=self.d(6), pady=0, cursor="hand2")
+            btn.pack(side="left", padx=(self.d(6) if mode == "power" else self.d(2), 0))
+            btn.bind("<Button-1>", lambda _e, m=mode: self.set_laptop_chart_mode(m))
+            self.lp_mode_buttons[mode] = btn
+        lp["legend"] = tk.Frame(head, bg=p.bg)
+        lp["legend"].pack(side="right")
+        lp["chart"] = tk.Canvas(self.page, width=self.chart_w, height=self.chart_h, bg=p.card,
+                                highlightthickness=1, highlightbackground=p.line)
+        lp["chart"].pack(padx=self.pad)
+        self._style_laptop_mode_buttons()
+
+        card = self._card(self.page)
+        card.configure(pady=self.d(4))
+        card.pack(fill="x", padx=self.pad, pady=(self.d(8), 0))
+        self.lp_details: dict[str, tk.Label] = {}
+        rows = ((("full", tr("满电容量")), ("design", tr("设计容量"))),
+                (("cap", tr("当前容量")), ("source", tr("电源"))))
+        for r, pair in enumerate(rows):
+            for c, (key, name) in enumerate(pair):
+                self._label(card, name, size=8, color=p.muted, anchor="w").grid(
+                    row=r, column=c * 2, sticky="nw", padx=(self.d(8) if c == 0 else self.d(6), self.d(6)), pady=self.d(1))
+                v = self._label(card, "—", size=8, anchor="w")
+                v.grid(row=r, column=c * 2 + 1, sticky="nw", padx=(0, self.d(8) if c == 1 else 0), pady=self.d(1))
+                self.lp_details[key] = v
+        card.grid_columnconfigure(1, weight=1, uniform="lv")
+        card.grid_columnconfigure(3, weight=1, uniform="lv")
+
+    def set_laptop_chart_mode(self, mode: str) -> None:
+        self.lp_chart_mode = mode
+        self.lp["chart_title"].config(text=tr("近 7 天") if mode == "wear" else tr("近 10 分钟"))
+        self._style_laptop_mode_buttons()
+        self._draw_laptop_chart(self.laptop.status)
+
+    def _style_laptop_mode_buttons(self) -> None:
+        p = self.p
+        for mode, btn in self.lp_mode_buttons.items():
+            active = mode == self.lp_chart_mode
+            btn.config(bg=p.card if active else p.bg, fg=p.fg if active else p.muted,
+                       highlightthickness=1 if active else 0, highlightbackground=p.line)
+        legend = self.lp["legend"]
+        for child in legend.winfo_children():
+            child.destroy()
+        items = (((tr("电池功率"), p.green),) if self.lp_chart_mode == "power"
+                 else ((tr("插电时"), p.orange), (tr("拔线时"), p.blue)))
+        for name, color in items:
+            self._label(legend, f"● {name}", size=8, color=color).pack(side="left", padx=(self.d(8), 0))
+
+    def _draw_laptop_chart(self, s: LaptopStatus) -> None:
+        if self.lp_chart_mode == "power":
+            self._draw_series(list(self.laptop.history), [], (self.p.green, self.p.green), canvas=self.lp["chart"])
+            return
+        rows = dict(load_wear(s.key, WEAR_DAYS)) if s.present else {}
+        design = s.design_mwh or next((d.get("design_mwh") for d in rows.values() if d.get("design_mwh")), None)
+        self._draw_wear_bars(self.lp["chart"], rows, design / 1000 if design else None,
+                             tr("还没有数据。程序运行时会自动统计。"))
+
+    def update_laptop(self, s: LaptopStatus) -> None:
+        if not self.laptop_page or self.page_name != "laptop" or not s.present:
+            return
+        p, lp = self.p, self.lp
+        lp["sub"].config(text=" · ".join(x for x in (
+            f"{s.maker} {s.name}".strip(),
+            tr("设计 {wh} Wh", wh=f"{s.design_mwh / 1000:.1f}") if s.design_mwh else "") if x) or " ")
+        draining = s.rate_w is not None and s.rate_w < -0.3
+        if s.online:
+            lp["pill"].config(text=tr("● 已接电源"), bg=p.ok_bg, fg=p.ok_fg)
+        else:
+            lp["pill"].config(text=tr("● 使用电池"), bg=p.info_bg, fg=p.info_fg)
+        low = s.percent is not None and s.percent <= LOW_BATTERY and not s.online
+        lp["pct"].config(text=f"{s.percent:.0f}%" if s.percent is not None else "--",
+                         fg=p.green if s.charging else (p.red if low else p.fg))
+        c = lp["bar"]
+        c.delete("all")
+        top = self.d(3)
+        c.create_rectangle(0, top, self.bar_w, top + self.bar_h, fill=p.track, width=0)
+        if s.percent is not None:
+            color = p.green if s.charging else (p.red if draining and s.online else p.blue)
+            c.create_rectangle(0, top, self.bar_w * s.percent / 100, top + self.bar_h, fill=color, width=0)
+        if s.charging:
+            state = tr("充电中")
+        elif s.online and draining:
+            state = tr("插着电源仍在耗电池")
+        elif s.online:
+            state = tr("已接电源 · 未充电")
+        else:
+            state = tr("使用电池")
+        lp["state"].config(text=state, fg=p.orange if s.online and draining else p.fg)
+        minutes = self.laptop.minutes_left(s)
+        detail = ""
+        if minutes is not None and minutes < 24 * 60:
+            detail = (tr("约 {time}充满", time=format_minutes(minutes)) if s.rate_w > 0
+                      else tr("剩余约 {time}", time=format_minutes(minutes)))
+        lp["detail"].config(text=detail or " ")
+
+        tiles = self.lp_tiles
+        if s.rate_w is None:
+            self._set_tile(tiles, "rate", "—", "")
+        elif abs(s.rate_w) < 0.05:
+            self._set_tile(tiles, "rate", "0.0 W", tr("不充不放"))
+        elif s.rate_w > 0:
+            self._set_tile(tiles, "rate", fmt(s.rate_w, "W", signed=True), tr("充入"), p.green)
+        else:
+            self._set_tile(tiles, "rate", fmt(s.rate_w, "W", signed=True), tr("放电"), p.red)
+        self._set_tile(tiles, "voltage", fmt(s.voltage_v, "V", digits=2), "")
+        health = s.health_pct
+        self._set_tile(tiles, "health", f"{health:.1f}%" if health else "—",
+                       tr("{full} / {design} Wh", full=f"{s.full_mwh / 1000:.1f}",
+                          design=f"{s.design_mwh / 1000:.1f}") if health else "")
+        self._set_tile(tiles, "cycles", str(s.cycles) if s.cycles else "—", "")
+
+        dt = self.lp_details
+        dt["full"].config(text=f"{s.full_mwh / 1000:.1f} Wh" if s.full_mwh else "—")
+        dt["design"].config(text=f"{s.design_mwh / 1000:.1f} Wh" if s.design_mwh else "—")
+        dt["cap"].config(text=f"{s.capacity_mwh / 1000:.1f} Wh" if s.capacity_mwh is not None else "—")
+        dt["source"].config(text=tr("已接电源") if s.online else tr("电池"))
+        self.updated_label.config(text=tr("更新于 {t}", t=time.strftime("%H:%M:%S", time.localtime(s.timestamp))))
+        slow_due = time.time() - self._lp_slow_at >= SLOW_REFRESH_SECONDS
+        if self.lp_chart_mode == "power" or slow_due:
+            if slow_due:
+                self._lp_slow_at = time.time()
+            self._draw_laptop_chart(s)
