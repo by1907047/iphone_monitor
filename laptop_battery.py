@@ -26,6 +26,9 @@ PACKAGE_COUNTER = "\\Energy Meter(RAPL_Package0_PKG)\\Power"  # 毫瓦
 REST_FILE = Path(os.environ.get("APPDATA", Path.home())) / "iPhoneMonitor" / "laptop_power.json"
 REST_ALPHA = 0.1  # 「其余部分」功耗的平滑系数
 REST_MIN_W, REST_MAX_W = 0.5, 40.0
+# 还没用电池校准过时，「其余部分」先按 6 W 粗估：16 英寸高分屏中等亮度 + 固态硬盘 + 无线网卡 + 内存的常见水平；
+# 这台电脑的 Windows 电池报告里，历次用电池时整机平均 9–13 W，减去当时的处理器功耗也在这个量级
+REST_DEFAULT_W = 6.0
 
 
 class _GUID(ctypes.Structure):
@@ -100,6 +103,15 @@ class LaptopStatus:
     package_w: Optional[float] = None  # 处理器封装功耗（CPU + 核显）
     system_w: Optional[float] = None  # 整机耗电
     system_measured: bool = False  # True：用电池时按放电实测；False：插电时估算（处理器 + 其余部分）
+    rest_w: Optional[float] = None  # 估算用的「其余部分」功耗
+    rest_calibrated: bool = False  # 其余部分是用电池时学到的（True），还是默认值（False）
+
+    @property
+    def input_w(self) -> Optional[float]:
+        """插电时充电器的输入功率 ≈ 整机耗电 + 充进电池的功率（放电时为负）。"""
+        if not self.online or self.system_w is None:
+            return None
+        return max(0.0, self.system_w + (self.rate_w or 0.0))
     online: bool = False  # 接着电源
     charging: bool = False
     cycles: Optional[int] = None
@@ -253,20 +265,24 @@ class LaptopBattery:
         rate = None if st.Rate == UNKNOWN_RATE else st.Rate / 1000
         online = bool(st.PowerState & POWER_ON_LINE)
         package = self.package.read() if self.package else None
-        system, measured = None, False
+        system, measured, rest = None, False, None
+        calibrated = self.rest_w is not None
         if not online and rate is not None and rate < 0:
             system, measured = -rate, True
             if package is not None:
                 self._learn_rest(system - package)
-        elif package is not None and self.rest_w is not None:
-            system = package + self.rest_w
+                rest, calibrated = system - package, True
+        elif package is not None:
+            rest = self.rest_w if calibrated else REST_DEFAULT_W
+            system = package + rest
         full = self._static.get("full")
         self.status = LaptopStatus(
             present=True, timestamp=now, name=self._static.get("name", ""), maker=self._static.get("maker", ""),
             percent=min(100.0, st.Capacity * 100 / full) if full else None, capacity_mwh=st.Capacity,
             full_mwh=full, design_mwh=self._static.get("design"), voltage_v=st.Voltage / 1000 if st.Voltage else None,
             rate_w=rate, online=online, charging=bool(st.PowerState & CHARGING),
-            cycles=self._static.get("cycles"), package_w=package, system_w=system, system_measured=measured)
+            cycles=self._static.get("cycles"), package_w=package, system_w=system, system_measured=measured,
+            rest_w=rest, rest_calibrated=calibrated)
         self.history.append((now, rate, system))
         while self.history and self.history[0][0] < now - HISTORY_SECONDS:
             self.history.popleft()

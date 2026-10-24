@@ -363,7 +363,8 @@ class DetailWindow:
         if s.connected:
             self.status_pill.config(text=tr("● 已连接 · {conn}", conn=s.connection), bg=p.ok_bg, fg=p.ok_fg)
         else:
-            self.status_pill.config(text="● " + (s.status or tr("未连接"))[:30], bg=p.warn_bg, fg=p.warn_fg)
+            connecting = s.status == tr("正在连接…")
+            self.status_pill.config(text=tr("● 连接中") if connecting else tr("● 未连接"), bg=p.warn_bg, fg=p.warn_fg)
 
         # 电量 + 电池条
         if s.connected and s.percent is not None:
@@ -373,7 +374,12 @@ class DetailWindow:
         else:
             self.pct_label.config(text="--", fg=p.muted)
         self._draw_battery_bar(s)
-        state = (ins.state or charge_state(s)) if s.connected else (s.status or tr("未连接"))
+        if s.connected:
+            state = ins.state or charge_state(s)
+        elif s.status in ("", tr("正在连接…"), tr("未连接")):
+            state = tr("插上数据线并解锁 iPhone，会自动连接")
+        else:
+            state = s.status  # 具体原因，比如没装 Apple 设备服务、需要点「信任」
         self.state_label.config(text=state)
         parts = []
         if ins.eta_minutes is not None:
@@ -459,7 +465,9 @@ class DetailWindow:
         minutes = (r["end"] - r["start"]) / 60
         duration = tr("{m} 分钟", m=f"{minutes:.0f}") if minutes < 60 else tr("{h} 小时", h=f"{minutes / 60:.1f}")
         day = time.strftime("%m-%d", time.localtime(r["start"]))
-        self.details["last"].config(text=f"{r['start_pct']}→{r['end_pct']}% · {duration} · {day}")
+        level = (tr("保持 {pct}%", pct=r["end_pct"]) if r["start_pct"] == r["end_pct"]
+                 else f"{r['start_pct']}→{r['end_pct']}%")  # 停在充电上限时前后一样，别写成 80→80%
+        self.details["last"].config(text=f"{level} · {duration} · {day}")
 
     def update_dev(self, dv: DevStats) -> None:
         self.last_dev = dv
@@ -612,6 +620,8 @@ class DetailWindow:
                     pad_t + (h - pad_t - pad_b) * (1 - (v - lo) / (hi - lo)))
 
         small = ("Segoe UI", 8)
+        if not fixed and hi - lo >= 10:
+            digits = 0  # 刻度取整，别出现 11.5、-9.6 这种零碎数字
         for v in grid:
             _, y = xy(now, v)
             c.create_line(pad_l, y, w - pad_r, y, fill=p.line, dash=(2, 3) if v == 0 and not fixed else ())
@@ -659,6 +669,9 @@ class DetailWindow:
         new.pack(fill="x", before=self.footer)
         self.page_name = name
         self._style_page_buttons()
+        version = self.root.title().partition(" · ")[2]
+        title = tr("本机电池") if name == "laptop" else tr("iPhone 状态")
+        self.root.title(f"{title} · {version}" if version else title)
         if name == "laptop":
             self.update_laptop(self.laptop.read())
         else:
@@ -715,8 +728,9 @@ class DetailWindow:
         card.pack(fill="x", padx=self.pad, pady=(self.d(8), 0))
         self.lp_details: dict[str, tk.Label] = {}
         rows = ((("full", tr("满电容量")), ("design", tr("设计容量"))),
-                (("cap", tr("当前容量")), ("source", tr("电源"))),
-                (("voltage", tr("电压")), ("package", tr("处理器功耗"))))
+                (("cap", tr("当前容量")), ("voltage", tr("电压"))),
+                (("package", tr("处理器功耗")), ("rest", tr("其他部件"))),
+                (("input", tr("充电器输入")),))
         for r, pair in enumerate(rows):
             for c, (key, name) in enumerate(pair):
                 self._label(card, name, size=8, color=p.muted, anchor="w").grid(
@@ -833,8 +847,10 @@ class DetailWindow:
             state = tr("充电中")
         elif s.online and draining:
             state = tr("插着电源仍在耗电池")
+        elif s.online and s.percent is not None and s.percent >= 95:
+            state = tr("已充满，由电源直接供电")
         elif s.online:
-            state = tr("已接电源 · 未充电")
+            state = tr("已接电源，暂停充电")
         else:
             state = tr("使用电池")
         lp["state"].config(text=state, fg=p.orange if s.online and draining else p.fg)
@@ -847,14 +863,12 @@ class DetailWindow:
 
         tiles = self.lp_tiles
         if s.system_w is not None and s.system_measured:
-            self._set_tile(tiles, "system", fmt(s.system_w, "W"), tr("按电池放电实测"))
+            self._set_tile(tiles, "system", fmt(s.system_w, "W"), tr("电池实测"))
         elif s.system_w is not None:
             self._set_tile(tiles, "system", "≈ " + fmt(s.system_w, "W"),
-                           tr("估算：处理器 {w} W + 其他", w=f"{s.package_w:.1f}"))
-        elif s.package_w is not None:
-            self._set_tile(tiles, "system", fmt(s.package_w, "W"), tr("仅处理器；用电池时可学会估整机"))
+                           tr("估算" if s.rest_calibrated else "粗估") + " · " + tr("处理器 {w} W", w=f"{s.package_w:.1f}"))
         else:
-            self._set_tile(tiles, "system", "—", "")
+            self._set_tile(tiles, "system", "—", tr("读不到处理器功耗"))
         if s.rate_w is None:
             self._set_tile(tiles, "rate", "—", "")
         elif abs(s.rate_w) < 0.05:
@@ -873,9 +887,16 @@ class DetailWindow:
         dt["full"].config(text=f"{s.full_mwh / 1000:.1f} Wh" if s.full_mwh else "—")
         dt["design"].config(text=f"{s.design_mwh / 1000:.1f} Wh" if s.design_mwh else "—")
         dt["cap"].config(text=f"{s.capacity_mwh / 1000:.1f} Wh" if s.capacity_mwh is not None else "—")
-        dt["source"].config(text=tr("已接电源") if s.online else tr("电池"))
         dt["voltage"].config(text=fmt(s.voltage_v, "V", digits=2))
         dt["package"].config(text=fmt(s.package_w, "W") if s.package_w is not None else "—")
+        if s.rest_w is None:
+            rest = "—"
+        elif s.system_measured:
+            rest = tr("{w} W · 校准中", w=f"{s.rest_w:.1f}")
+        else:
+            rest = tr("≈ {w} W · 已校准" if s.rest_calibrated else "≈ {w} W · 默认值", w=f"{s.rest_w:.1f}")
+        dt["rest"].config(text=rest)
+        dt["input"].config(text="≈ " + fmt(s.input_w, "W") if s.input_w is not None else tr("未接电源"))
         self.updated_label.config(text=tr("更新于 {t}", t=time.strftime("%H:%M:%S", time.localtime(s.timestamp))))
         slow_due = time.time() - self._lp_slow_at >= SLOW_REFRESH_SECONDS
         if self.lp_chart_mode == "power" or slow_due:
