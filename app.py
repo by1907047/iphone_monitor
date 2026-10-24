@@ -28,6 +28,7 @@ from i18n import LANGUAGES, tr
 from monitor import FROZEN, LOG_DIR, DevStats, Monitor, Snapshot
 from insights import CHARGE_LIMITS, ChargeInsight, Insights
 from laptop_battery import LaptopBattery, LaptopStatus
+import battery_report
 from bt_audio import BluetoothAudio
 from detail_window import DetailWindow
 from taskbar_strip import TaskbarStrip
@@ -177,6 +178,7 @@ TICK_IDLE_MS = 1000
 LAPTOP_FAST_SECONDS, LAPTOP_IDLE_SECONDS = 2, 20  # 本机电池：页面开着时 2 秒读一次，否则 20 秒（够统计损耗和提醒）
 LAPTOP_DRAIN_W = 1.0  # 插着电源时电池放电超过这么多才算「插电仍掉电」
 LAPTOP_DRAIN_ALERT_SECONDS = 120
+REPORT_FIRST_DELAY, REPORT_CHECK_SECONDS = 30, 3600  # Windows 电池报告：启动后 30 秒导入，之后每小时看日期变没变
 DPI_SETTLE_SECONDS = 3
 TETHER_CHECK_SECONDS = 15
 # iPhone 开着个人热点时，USB 网卡会拿到 172.20.10.x 并可能抢走默认路由。
@@ -341,6 +343,7 @@ class App:
         self.laptop_read_at = 0.0
         self.laptop_drain_since: Optional[float] = None
         self.laptop_alerted = False
+        self.report_check_at = time.time() + REPORT_FIRST_DELAY
         self.window = DetailWindow(self.root, self.monitor, self.settings, on_usb_only=self.set_usb_only,
                                    charge_limit=lambda: int(self.settings["charge_limit"]),
                                    dock_side=self.window_side, laptop=self.laptop)
@@ -694,6 +697,29 @@ class App:
         if fast:
             self.window.update_laptop(s)
 
+    def maybe_import_report(self) -> None:
+        if not self.laptop.present or time.time() < self.report_check_at:
+            return
+        self.report_check_at = time.time() + REPORT_CHECK_SECONDS
+        today = time.strftime("%Y-%m-%d")
+        if self.settings.get("battery_report_date") == today:
+            return
+
+        def work() -> None:
+            root = battery_report.run_report()
+            data = battery_report.parse(root) if root is not None else None
+            if data:
+                battery_report.save_periods(data["key"], data["periods"])
+                self.ui(lambda: self.apply_report(data, today))
+
+        threading.Thread(target=work, name="battery-report", daemon=True).start()
+
+    def apply_report(self, data: dict, today: str) -> None:
+        self.insights.wear.import_laptop_days(data["key"], data["days"])
+        self.settings["battery_report_date"] = today
+        save_settings(self.settings)
+        log.info("已导入 Windows 电池报告：%d 天放电记录、%d 段长期记录", len(data["days"]), len(data["periods"]))
+
     def check_laptop_drain(self, s: LaptopStatus) -> None:
         draining = s.online and s.rate_w is not None and s.rate_w < -LAPTOP_DRAIN_W
         if not draining:
@@ -785,6 +811,7 @@ class App:
         self.check_tethering()
         self.check_bt_audio()
         self.poll_laptop()
+        self.maybe_import_report()
         if self.tray_ready:
             self.sync_tray()
         if self.show_event and ctypes.windll.kernel32.WaitForSingleObject(ctypes.c_void_p(self.show_event), 0) == 0:

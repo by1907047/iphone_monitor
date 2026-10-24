@@ -22,6 +22,7 @@ from typing import Callable, Optional
 from i18n import tr
 from insights import ChargeInsight, cycle_wh, device_key, load_sessions, load_wear
 from laptop_battery import LaptopBattery, LaptopStatus
+import battery_report
 from monitor import DevStats, Monitor, Snapshot
 from ui_common import (
     FONT_NUM, FONT_UI, LOW_BATTERY, Palette, charge_state, fmt, format_minutes, power_source, windows_dark_mode,
@@ -689,7 +690,7 @@ class DetailWindow:
         lp["detail"] = self._label(right, size=8, color=p.muted, anchor="w")
         lp["detail"].pack(anchor="w")
 
-        self.lp_tiles = self._tile_row((("rate", tr("电池功率")), ("voltage", tr("电压")),
+        self.lp_tiles = self._tile_row((("system", tr("整机耗电", "laptop")), ("rate", tr("电池功率")),
                                         ("health", tr("健康度")), ("cycles", tr("循环次数"))))
 
         head = tk.Frame(self.page, bg=p.bg)
@@ -697,7 +698,7 @@ class DetailWindow:
         lp["chart_title"] = self._label(head, tr("近 10 分钟"), size=9, bold=True)
         lp["chart_title"].pack(side="left")
         self.lp_mode_buttons: dict[str, tk.Label] = {}
-        for mode, text in (("power", tr("功率")), ("wear", tr("电池损耗"))):
+        for mode, text in (("power", tr("功率")), ("wear", tr("电池损耗")), ("long", tr("长期"))):
             btn = self._label(head, text, size=8, padx=self.d(6), pady=0, cursor="hand2")
             btn.pack(side="left", padx=(self.d(6) if mode == "power" else self.d(2), 0))
             btn.bind("<Button-1>", lambda _e, m=mode: self.set_laptop_chart_mode(m))
@@ -714,7 +715,8 @@ class DetailWindow:
         card.pack(fill="x", padx=self.pad, pady=(self.d(8), 0))
         self.lp_details: dict[str, tk.Label] = {}
         rows = ((("full", tr("满电容量")), ("design", tr("设计容量"))),
-                (("cap", tr("当前容量")), ("source", tr("电源"))))
+                (("cap", tr("当前容量")), ("source", tr("电源"))),
+                (("voltage", tr("电压")), ("package", tr("处理器功耗"))))
         for r, pair in enumerate(rows):
             for c, (key, name) in enumerate(pair):
                 self._label(card, name, size=8, color=p.muted, anchor="w").grid(
@@ -727,7 +729,7 @@ class DetailWindow:
 
     def set_laptop_chart_mode(self, mode: str) -> None:
         self.lp_chart_mode = mode
-        self.lp["chart_title"].config(text=tr("近 7 天") if mode == "wear" else tr("近 10 分钟"))
+        self.lp["chart_title"].config(text={"wear": tr("近 7 天"), "long": tr("每月")}.get(mode, tr("近 10 分钟")))
         self._style_laptop_mode_buttons()
         self._draw_laptop_chart(self.laptop.status)
 
@@ -740,19 +742,70 @@ class DetailWindow:
         legend = self.lp["legend"]
         for child in legend.winfo_children():
             child.destroy()
-        items = (((tr("电池功率"), p.green),) if self.lp_chart_mode == "power"
-                 else ((tr("插电时"), p.orange), (tr("拔线时"), p.blue)))
+        items = {"power": ((tr("整机耗电", "legend"), p.orange), (tr("电池"), p.green)),
+                 "wear": ((tr("插电时"), p.orange), (tr("拔线时"), p.blue)),
+                 "long": ((tr("健康度"), p.blue), (tr("用电池（次循环）"), p.orange))}[self.lp_chart_mode]
         for name, color in items:
             self._label(legend, f"● {name}", size=8, color=color).pack(side="left", padx=(self.d(8), 0))
 
     def _draw_laptop_chart(self, s: LaptopStatus) -> None:
         if self.lp_chart_mode == "power":
-            self._draw_series(list(self.laptop.history), [], (self.p.green, self.p.green), canvas=self.lp["chart"])
+            hist = list(self.laptop.history)
+            self._draw_series([(t, sw) for t, _r, sw in hist], [(t, r) for t, r, _sw in hist],
+                              (self.p.orange, self.p.green), canvas=self.lp["chart"])
+            return
+        if self.lp_chart_mode == "long":
+            self._draw_long_term(s)
             return
         rows = dict(load_wear(s.key, WEAR_DAYS)) if s.present else {}
         design = s.design_mwh or next((d.get("design_mwh") for d in rows.values() if d.get("design_mwh")), None)
         self._draw_wear_bars(self.lp["chart"], rows, design / 1000 if design else None,
                              tr("还没有数据。程序运行时会自动统计。"))
+
+    def _draw_long_term(self, s: LaptopStatus) -> None:
+        """每月：健康度折线 + 当月用电池放掉的电（折合循环次数）柱子。数据来自 Windows 电池报告。"""
+        p, c = self.p, self.lp["chart"]
+        c.delete("all")
+        w, h = self.chart_w, self.chart_h
+        small = (FONT_UI, 8)
+        months = [m for m in battery_report.monthly(s.key) if m.get("health")]
+        if len(months) < 2:
+            c.create_text(w / 2, h / 2, text=tr("还没有长期记录。程序每天会从 Windows 电池报告导入一次。"),
+                          fill=p.muted, font=small)
+            return
+        first, last = months[0], months[-1]
+        c.create_text(self.d(8), self.d(9), anchor="w", fill=p.muted, font=small,
+                      text=tr("健康度 {h0}% → {h1}% · 循环 {c0} → {c1} 次（{since} 起）",
+                              h0=f"{first['health']:.1f}", h1=f"{last['health']:.1f}", c0=first["cycles"],
+                              c1=last["cycles"], since=first["month"]))
+        top, bottom, left, right = self.d(24), h - self.d(14), self.d(8), w - self.d(8)
+        # 连续的月份轴：Windows 没记录的月份留空，折线在那里断开，不把前后两段连成一条
+        by_month = {m["month"]: m for m in months}
+        y, mo = map(int, first["month"].split("-"))
+        axis = []
+        while f"{y:04d}-{mo:02d}" <= last["month"]:
+            axis.append(f"{y:04d}-{mo:02d}")
+            y, mo = (y + 1, 1) if mo == 12 else (y, mo + 1)
+        slot = (right - left) / len(axis)
+        hi_used = max([m["battery_wh"] / m["design_wh"] for m in months] + [1.0])
+        healths = [m["health"] for m in months]
+        lo_h, hi_h = min(healths) - 1, max(healths) + 1
+        segment: list[float] = []
+        for i, month in enumerate(axis):
+            x = left + slot * i
+            m = by_month.get(month)
+            if i in (0, len(axis) - 1) or month.endswith("-01"):
+                c.create_text(x + slot / 2, h - self.d(7), text=month[2:].replace("-", "."), fill=p.muted, font=small)
+            if m is None:
+                if len(segment) >= 4:
+                    c.create_line(*segment, fill=p.blue, width=max(1, self.d(2)))
+                segment = []
+                continue
+            bar_h = (bottom - top) * m["battery_wh"] / m["design_wh"] / hi_used
+            c.create_rectangle(x + slot * 0.2, bottom - bar_h, x + slot * 0.8, bottom, fill=p.orange, width=0)
+            segment.extend((x + slot / 2, bottom - (bottom - top) * (m["health"] - lo_h) / (hi_h - lo_h)))
+        if len(segment) >= 4:
+            c.create_line(*segment, fill=p.blue, width=max(1, self.d(2)))
 
     def update_laptop(self, s: LaptopStatus) -> None:
         if not self.laptop_page or self.page_name != "laptop" or not s.present:
@@ -793,6 +846,15 @@ class DetailWindow:
         lp["detail"].config(text=detail or " ")
 
         tiles = self.lp_tiles
+        if s.system_w is not None and s.system_measured:
+            self._set_tile(tiles, "system", fmt(s.system_w, "W"), tr("按电池放电实测"))
+        elif s.system_w is not None:
+            self._set_tile(tiles, "system", "≈ " + fmt(s.system_w, "W"),
+                           tr("估算：处理器 {w} W + 其他", w=f"{s.package_w:.1f}"))
+        elif s.package_w is not None:
+            self._set_tile(tiles, "system", fmt(s.package_w, "W"), tr("仅处理器；用电池时可学会估整机"))
+        else:
+            self._set_tile(tiles, "system", "—", "")
         if s.rate_w is None:
             self._set_tile(tiles, "rate", "—", "")
         elif abs(s.rate_w) < 0.05:
@@ -801,7 +863,6 @@ class DetailWindow:
             self._set_tile(tiles, "rate", fmt(s.rate_w, "W", signed=True), tr("充入"), p.green)
         else:
             self._set_tile(tiles, "rate", fmt(s.rate_w, "W", signed=True), tr("放电"), p.red)
-        self._set_tile(tiles, "voltage", fmt(s.voltage_v, "V", digits=2), "")
         health = s.health_pct
         self._set_tile(tiles, "health", f"{health:.1f}%" if health else "—",
                        tr("{full} / {design} Wh", full=f"{s.full_mwh / 1000:.1f}",
@@ -813,6 +874,8 @@ class DetailWindow:
         dt["design"].config(text=f"{s.design_mwh / 1000:.1f} Wh" if s.design_mwh else "—")
         dt["cap"].config(text=f"{s.capacity_mwh / 1000:.1f} Wh" if s.capacity_mwh is not None else "—")
         dt["source"].config(text=tr("已接电源") if s.online else tr("电池"))
+        dt["voltage"].config(text=fmt(s.voltage_v, "V", digits=2))
+        dt["package"].config(text=fmt(s.package_w, "W") if s.package_w is not None else "—")
         self.updated_label.config(text=tr("更新于 {t}", t=time.strftime("%H:%M:%S", time.localtime(s.timestamp))))
         slow_due = time.time() - self._lp_slow_at >= SLOW_REFRESH_SECONDS
         if self.lp_chart_mode == "power" or slow_due:

@@ -2,19 +2,30 @@
 
 一次查询不到 1 毫秒，能拿到设计容量、满电容量、循环次数、当前容量、电压和充放电功率。
 台式机没有电池时 present 为 False，界面就不显示「本机电池」。
+
+整机功率：用电池供电时就是电池放电功率（实测）。插着电源时 Windows 没有通用的输入功率接口
+（这台电脑的 ACPI Power Meter 读数恒为 0），所以用处理器封装功耗（Intel RAPL，Windows 的 Energy Meter
+性能计数器）加上「其余部分」估算；「其余部分」= 用电池时的放电功率 − 处理器功耗，拔电时持续学习并保存。
 """
 
 import ctypes
 import ctypes.wintypes as w
+import json
 import logging
+import os
 import time
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 log = logging.getLogger(__name__)
 
 HISTORY_SECONDS = 600
+PACKAGE_COUNTER = "\\Energy Meter(RAPL_Package0_PKG)\\Power"  # 毫瓦
+REST_FILE = Path(os.environ.get("APPDATA", Path.home())) / "iPhoneMonitor" / "laptop_power.json"
+REST_ALPHA = 0.1  # 「其余部分」功耗的平滑系数
+REST_MIN_W, REST_MAX_W = 0.5, 40.0
 
 
 class _GUID(ctypes.Structure):
@@ -86,6 +97,9 @@ class LaptopStatus:
     design_mwh: Optional[int] = None
     voltage_v: Optional[float] = None
     rate_w: Optional[float] = None  # 正 = 充入电池，负 = 电池放电
+    package_w: Optional[float] = None  # 处理器封装功耗（CPU + 核显）
+    system_w: Optional[float] = None  # 整机耗电
+    system_measured: bool = False  # True：用电池时按放电实测；False：插电时估算（处理器 + 其余部分）
     online: bool = False  # 接着电源
     charging: bool = False
     cycles: Optional[int] = None
@@ -123,6 +137,41 @@ def _battery_paths() -> list[str]:
     return paths
 
 
+class _PdhValue(ctypes.Structure):
+    _fields_ = [("CStatus", w.DWORD), ("doubleValue", ctypes.c_double)]  # PDH_FMT_COUNTERVALUE（x64 下 8 字节对齐）
+
+
+class PackagePower:
+    """读 Windows「Energy Meter」性能计数器里的 RAPL 封装功耗；没有这个计数器（AMD 老机型等）时 available 为 False。"""
+
+    def __init__(self) -> None:
+        self._pdh = ctypes.WinDLL("pdh")
+        self._query, self._counter = w.HANDLE(), w.HANDLE()
+        self.available = (self._pdh.PdhOpenQueryW(None, None, ctypes.byref(self._query)) == 0
+                          and self._pdh.PdhAddEnglishCounterW(self._query, PACKAGE_COUNTER, None,
+                                                              ctypes.byref(self._counter)) == 0)
+        self._value: Optional[float] = None
+        self._collected_at = time.monotonic()
+        if self.available:
+            self._pdh.PdhCollectQueryData(self._query)
+
+    def read(self) -> Optional[float]:
+        """两次采样之间的平均功率；间隔太短（< 0.5 秒）算出来不准，沿用上一次的值。"""
+        if not self.available:
+            return None
+        now = time.monotonic()
+        if now - self._collected_at < 0.5:
+            return self._value
+        self._collected_at = now
+        if self._pdh.PdhCollectQueryData(self._query) != 0:
+            return None
+        value = _PdhValue()
+        if self._pdh.PdhGetFormattedCounterValue(self._counter, 0x200, None, ctypes.byref(value)) != 0:  # DOUBLE
+            return None
+        self._value = value.doubleValue / 1000 if value.doubleValue > 0 else None
+        return self._value
+
+
 class LaptopBattery:
     """只读第一块系统电池（绝大多数笔记本只有一块）。读取在界面线程里做，耗时不到 1 毫秒。"""
 
@@ -130,9 +179,28 @@ class LaptopBattery:
         self._handle = None
         self._tag = 0
         self._static: dict = {}
-        self.history: deque[tuple[float, Optional[float]]] = deque()
+        self.history: deque[tuple[float, Optional[float], Optional[float]]] = deque()  # (时间, 电池, 整机)
         self.status = LaptopStatus()
         self.present = bool(_battery_paths())
+        self.package = PackagePower() if self.present else None
+        self.rest_w = self._load_rest()
+
+    @staticmethod
+    def _load_rest() -> Optional[float]:
+        try:
+            return float(json.loads(REST_FILE.read_text(encoding="utf-8"))["rest_w"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def _learn_rest(self, sample_w: float) -> None:
+        """用电池时：整机 − 处理器 = 屏幕、硬盘、网卡等其余部分；平滑后保存，插电时拿来估算整机。"""
+        sample_w = max(REST_MIN_W, min(REST_MAX_W, sample_w))
+        self.rest_w = sample_w if self.rest_w is None else self.rest_w + REST_ALPHA * (sample_w - self.rest_w)
+        try:
+            REST_FILE.parent.mkdir(parents=True, exist_ok=True)
+            REST_FILE.write_text(json.dumps({"rest_w": round(self.rest_w, 3), "updated": time.time()}), encoding="utf-8")
+        except OSError:
+            pass
 
     def _ioctl(self, code: int, inp, out) -> bool:
         n = w.DWORD()
@@ -183,14 +251,23 @@ class LaptopBattery:
             return self.status
         now = time.time()
         rate = None if st.Rate == UNKNOWN_RATE else st.Rate / 1000
+        online = bool(st.PowerState & POWER_ON_LINE)
+        package = self.package.read() if self.package else None
+        system, measured = None, False
+        if not online and rate is not None and rate < 0:
+            system, measured = -rate, True
+            if package is not None:
+                self._learn_rest(system - package)
+        elif package is not None and self.rest_w is not None:
+            system = package + self.rest_w
         full = self._static.get("full")
         self.status = LaptopStatus(
             present=True, timestamp=now, name=self._static.get("name", ""), maker=self._static.get("maker", ""),
             percent=min(100.0, st.Capacity * 100 / full) if full else None, capacity_mwh=st.Capacity,
             full_mwh=full, design_mwh=self._static.get("design"), voltage_v=st.Voltage / 1000 if st.Voltage else None,
-            rate_w=rate, online=bool(st.PowerState & POWER_ON_LINE), charging=bool(st.PowerState & CHARGING),
-            cycles=self._static.get("cycles"))
-        self.history.append((now, rate))
+            rate_w=rate, online=online, charging=bool(st.PowerState & CHARGING),
+            cycles=self._static.get("cycles"), package_w=package, system_w=system, system_measured=measured)
+        self.history.append((now, rate, system))
         while self.history and self.history[0][0] < now - HISTORY_SECONDS:
             self.history.popleft()
         return self.status

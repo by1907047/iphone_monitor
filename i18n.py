@@ -162,6 +162,7 @@ EN = {
     # ---- 详情窗口
     "整机耗电": "Phone load",
     "legend|整机耗电": "Load",
+    "laptop|整机耗电": "System power",
     "外部供电": "Power in",
     "电池": "Battery",
     "CPU · 内存": "CPU · Memory",
@@ -252,6 +253,17 @@ EN = {
     "电脑插着电源，电池仍在以 {w} W 放电。充电器功率可能不够，或者接在了扩展坞、低功率接口上。":
         "The laptop is plugged in but its battery is discharging at {w} W. The charger may be too weak, or it is on a dock or low-power port.",
     "电脑插电仍掉电": "Laptop draining while plugged in",
+    "长期": "Long-term",
+    "每月": "Monthly",
+    "处理器功耗": "CPU package",
+    "用电池（次循环）": "on battery (cycles)",
+    "按电池放电实测": "measured from battery",
+    "估算：处理器 {w} W + 其他": "est.: CPU {w} W + rest",
+    "仅处理器；用电池时可学会估整机": "CPU only; learns the rest on battery",
+    "还没有长期记录。程序每天会从 Windows 电池报告导入一次。":
+        "No long-term data yet. It is imported from the Windows battery report once a day.",
+    "健康度 {h0}% → {h1}% · 循环 {c0} → {c1} 次（{since} 起）":
+        "Health {h0}% → {h1}% · cycles {c0} → {c1} (since {since})",
 }
 
 _load()

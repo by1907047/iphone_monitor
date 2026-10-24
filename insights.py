@@ -393,6 +393,18 @@ class WearTracker:
         if now - self.saved_at >= WEAR_SAVE_SECONDS:
             self.save()
 
+    def import_laptop_days(self, key: str, days: dict) -> None:
+        """用 Windows 电池报告覆盖今天以前的笔记本放电记录：它不需要程序开着，比程序自己记的完整。"""
+        today = time.strftime("%Y-%m-%d")
+        for date, v in days.items():
+            if date >= today:
+                continue  # 今天的仍由程序实时统计
+            day = self._day(key, date)
+            day.update(plugged_mj=v["plugged_mj"], unplugged_mj=v["unplugged_mj"], charge_mj=v["charge_mj"],
+                       source="windows")
+            self.dirty = True
+        self.save()
+
     def _day(self, key: str, date: str) -> dict:
         days = self.days.setdefault(key, {})
         if date not in days:
