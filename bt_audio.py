@@ -9,12 +9,14 @@
 import asyncio
 import logging
 import threading
+import time
 from typing import Callable, Optional
 
 from i18n import tr
 
 log = logging.getLogger(__name__)
 
+FAILURE_LOG_SECONDS = 600  # 一直连不上时，每隔这么久记一次进展
 RETRY_MIN, RETRY_MAX = 10.0, 30.0  # 连不上时的重试间隔（秒），逐步拉长
 STEP_TIMEOUT = 20.0  # start / open 各自最多等这么久
 
@@ -31,6 +33,8 @@ class BluetoothAudio:
         self._stop = False
         self._force = False  # 手动「重新连接」：断开现有连接并马上重连
         self._last_failure = ""
+        self._failures = 0
+        self._failure_logged_at = 0.0
         threading.Thread(target=self._thread_main, name="bt-audio", daemon=True).start()
 
     # ---- 界面线程接口 ----
@@ -145,8 +149,11 @@ class BluetoothAudio:
                         await asyncio.sleep(0.1)
                     self._conn, self.device_name = conn, device.name
                     self.status = tr("已连接 {name}", name=device.name)
-                    log.info("蓝牙音频已连接：%s", device.name)
-                    retry, self._last_failure = RETRY_MIN, ""
+                    if self._failures:
+                        log.info("蓝牙音频已连接：%s（之前失败 %d 次）", device.name, self._failures)
+                    else:
+                        log.info("蓝牙音频已连接：%s", device.name)
+                    retry, self._last_failure, self._failures = RETRY_MIN, "", 0
                     continue
                 conn.close()
                 reason = {
@@ -163,9 +170,14 @@ class BluetoothAudio:
     def _failed(self, code: str, reason: str) -> None:
         """连接失败：更新状态；原因变了才写日志，免得每 30 秒刷一行。"""
         self.status = tr("{reason}，稍后重试", reason=reason)
+        self._failures += 1
+        now = time.time()
         if code != self._last_failure:
             log.info("蓝牙音频连接失败：%s", code)
-            self._last_failure = code
+            self._last_failure, self._failure_logged_at = code, now
+        elif now - self._failure_logged_at >= FAILURE_LOG_SECONDS:
+            log.info("蓝牙音频仍未连上：已重试 %d 次，最近原因 %s", self._failures, code)
+            self._failure_logged_at = now
 
     def _close(self) -> None:
         if self._conn is not None:

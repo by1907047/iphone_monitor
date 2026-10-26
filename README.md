@@ -10,7 +10,7 @@ A lightweight Windows taskbar tool that shows a USB-connected iPhone's **battery
 
 ## Features
 
-- **Taskbar strip** embedded in the Windows 11 taskbar: phone icon (bolt inside while charging, red while the battery is discharging), battery %, whole-phone power draw, and the phone's CPU and memory on the second line. Place it next to the tray or next to the widgets on the left; it switches to a compact layout when the taskbar gets crowded and falls back to a tray icon if there is no room.
+- **Taskbar strip** embedded in the Windows 11 taskbar: phone icon (bolt inside while charging, red while the battery is discharging), battery %, whole-phone power draw, and the phone's CPU and memory on the second line. Place it next to the tray or next to the widgets on the left; it switches to a compact layout when the taskbar gets crowded and falls back to a tray icon if there is no room. With no iPhone plugged in it shows the laptop's own battery and system power instead, and hovering shows a tooltip with the full details.
 - **Details window**: system load, external supply (voltage × current), battery in/out power, 10-minute charts, and the processes using the most CPU. Docks to the screen corner and follows light/dark mode.
 - **Power supply diagnosis**: estimates the **source voltage** and **line resistance** from voltage/current samples (V = V₀ − I·R), so you can tell a bad cable from a weak port or a heavy workload. Alerts when the phone drains while plugged in or charges slowly.
 - **Charging insights**: charge limit (kept in sync with the phone setting by you), time-to-full estimate, daily battery health log, and a record of every charging session.
@@ -25,6 +25,10 @@ A lightweight Windows taskbar tool that shows a USB-connected iPhone's **battery
 <img src="docs/images/details-dark-en.png" width="400" alt="Details window (dark)">
 </p>
 <img src="docs/images/wear-en.png" width="400" alt="Battery wear: daily discharge, plugged in vs unplugged">
+<p>
+<img src="docs/images/laptop-en.png" width="400" alt="Laptop battery: system power, battery power, health, cycles">
+<img src="docs/images/laptop-history-en.png" width="400" alt="Laptop battery: monthly health and on-battery cycles from the Windows battery report">
+</p>
 
 ## Getting started
 

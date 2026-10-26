@@ -234,6 +234,10 @@ EN = {
     "重新连接手机声音": "Reconnect iPhone audio",
     # ---- 本机电池
     "本机电池": "Laptop battery",
+    "laptop|整机耗电 {w}": "System power {w}",
+    "插电仍耗电": "Draining on AC",
+    "剩余 {time}": "{time} left",
+    "没插手机时显示本机电池": "Show laptop battery when no iPhone",
     "电池功率": "Battery power",
     "电压": "Voltage",
     "循环次数": "Cycle count",

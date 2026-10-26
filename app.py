@@ -32,7 +32,7 @@ import battery_report
 from bt_audio import BluetoothAudio
 from detail_window import DetailWindow
 from taskbar_strip import TaskbarStrip
-from ui_common import charge_state, enable_per_monitor_dpi, fmt, taskbar_dpi
+from ui_common import charge_state, enable_per_monitor_dpi, fmt, format_minutes, laptop_state, taskbar_dpi
 
 APP_NAME = "iPhoneMonitor"
 __version__ = "1.4.0"
@@ -44,6 +44,7 @@ DEFAULT_SETTINGS = {
     "strip_cpu": True,  # 文字条第二行显示 CPU 和内存（会让开发者通道常开）
     "tray_icon": False,  # 有文字条时默认不显示托盘图标
     "strip_position": "right",  # 文字条优先放的一侧：right=托盘旁，left=任务栏左侧小组件旁
+    "strip_laptop": True,  # 没插手机时文字条改显示本机电池（台式机没有电池时照旧收起）
     "bt_audio": False,  # 手机声音通过蓝牙转到电脑播放
     "charge_limit": 100,  # 与 iPhone「设置 → 电池 → 充电」里的上限保持一致；100 表示不限
     "language": "auto",  # auto（跟随 Windows 显示语言）/ zh / en
@@ -175,7 +176,8 @@ LANGUAGE_MENU = "语言 / Language"
 LANGUAGE_LABEL = {"auto": "跟随系统 / System default"}
 TICK_VISIBLE_MS = 500
 TICK_IDLE_MS = 1000
-LAPTOP_FAST_SECONDS, LAPTOP_IDLE_SECONDS = 2, 20  # 本机电池：页面开着时 2 秒读一次，否则 20 秒（够统计损耗和提醒）
+LAPTOP_FAST_SECONDS, LAPTOP_IDLE_SECONDS = 2, 20
+LAPTOP_STRIP_SECONDS = 5  # 文字条在显示本机电池时  # 本机电池：页面开着时 2 秒读一次，否则 20 秒（够统计损耗和提醒）
 LAPTOP_DRAIN_W = 1.0  # 插着电源时电池放电超过这么多才算「插电仍掉电」
 LAPTOP_DRAIN_ALERT_SECONDS = 120
 REPORT_FIRST_DELAY, REPORT_CHECK_SECONDS = 30, 3600  # Windows 电池报告：启动后 30 秒导入，之后每小时看日期变没变
@@ -236,11 +238,36 @@ def strip_stats_note(d: DevStats) -> str:
     return ""
 
 
-def tooltip(s: Snapshot, d: DevStats, tether_ip: Optional[str] = None) -> str:
+def tooltip(s: Snapshot, d: DevStats, tether_ip: Optional[str] = None, limit: Optional[int] = 127) -> str:
+    """托盘图标的提示最多 127 个字符；文字条的悬停提示不限长度（limit=None）。"""
     text = _tooltip(s, d)
     if tether_ip:
         text = tr("⚠ 手机热点正在接管电脑网络") + "\n" + text
-    return text[:127]
+    return text[:limit]
+
+
+def laptop_tooltip(s: LaptopStatus, minutes: Optional[float]) -> str:
+    lines = [f"{tr('本机电池')} · {s.percent:.0f}% · {laptop_state(s)}" if s.percent is not None
+             else tr("本机电池")]
+    if s.rate_w is not None:
+        lines.append(tr("电池 {w}", w=fmt(s.rate_w, "W", signed=True)))
+    if s.system_w is not None:
+        lines.append(tr("整机耗电 {w}", "laptop", w=("" if s.system_measured else "≈ ") + fmt(s.system_w, "W")))
+    if minutes is not None and minutes < 24 * 60 and s.rate_w:
+        lines.append(tr("约 {time}充满", time=format_minutes(minutes)) if s.rate_w > 0
+                     else tr("剩余约 {time}", time=format_minutes(minutes)))
+    return "\n".join(lines)
+
+
+def laptop_strip_note(s: LaptopStatus, minutes: Optional[float]) -> str:
+    """文字条第二行：用电池时显示还能用多久（时:分），否则显示电源状态。"""
+    if s.charging:
+        return tr("充电中")
+    if s.online:
+        return tr("插电仍耗电") if s.rate_w is not None and s.rate_w < -0.3 else tr("已接电源")
+    if minutes is not None and minutes < 24 * 60:
+        return tr("剩余 {time}", time=f"{int(minutes // 60)}:{int(minutes % 60):02d}")
+    return tr("使用电池")
 
 
 def _tooltip(s: Snapshot, d: DevStats) -> str:
@@ -341,6 +368,8 @@ class App:
         self.root.report_callback_exception = lambda *exc: log.error("界面回调出错", exc_info=exc)
         self.laptop = LaptopBattery()
         self.laptop_read_at = 0.0
+        self.laptop_status: Optional[LaptopStatus] = None
+        self.strip_device = "phone"  # 文字条当前显示的是手机还是本机电池
         self.laptop_drain_since: Optional[float] = None
         self.laptop_alerted = False
         self.report_check_at = time.time() + REPORT_FIRST_DELAY
@@ -421,6 +450,10 @@ class App:
             item(tr("文字条显示 CPU / 内存"), lambda: self.set_strip_cpu(not self.settings["strip_cpu"]),
                  checked=lambda _i: bool(self.settings["strip_cpu"]),
                  enabled=lambda _i: bool(self.settings["taskbar_strip"])),
+            item(tr("没插手机时显示本机电池"),
+                 lambda: self.set_strip_laptop(not self.settings.get("strip_laptop", True)),
+                 checked=lambda _i: bool(self.settings.get("strip_laptop", True)),
+                 enabled=lambda _i: bool(self.settings["taskbar_strip"]) and self.laptop.present),
             item(tr("文字条位置"), pystray.Menu(*[
                 item(tr(label), (lambda v=value: lambda: self.set_strip_position(v))(),
                      checked=(lambda v=value: lambda _i: self.settings.get("strip_position", "right") == v)(),
@@ -490,6 +523,11 @@ class App:
         save_settings(self.settings)
         self.icon.update_menu()
 
+    def set_strip_laptop(self, on: bool) -> None:
+        self.settings["strip_laptop"] = on
+        save_settings(self.settings)
+        self.icon.update_menu()
+
     def window_side(self) -> str:
         """详情窗口贴哪个角：文字条正显示在左边就贴左下角，否则贴右下角。"""
         strip_shown = self.settings["taskbar_strip"] and self.strip.hwnd and self.strip.fits
@@ -530,8 +568,8 @@ class App:
     def build_strip_menu(self) -> tk.Menu:
         """文字条/详情窗口的右键菜单：包含原托盘菜单里的全部设置。"""
         menu = tk.Menu(self.root, tearoff=0)
-        self.menu_vars = {k: tk.BooleanVar() for k in ("strip_cpu", "dev_stats", "usb_only", "topmost",
-                                                         "autostart", "tray_icon", "bt_audio")}
+        self.menu_vars = {k: tk.BooleanVar() for k in ("strip_cpu", "strip_laptop", "dev_stats", "usb_only",
+                                                         "topmost", "autostart", "tray_icon", "bt_audio")}
         self.menu_interval = tk.DoubleVar()
         v = self.menu_vars
         menu.add_command(label=tr("显示 / 隐藏详情"), command=self.window.toggle)
@@ -541,6 +579,8 @@ class App:
         menu.add_separator()
         menu.add_checkbutton(label=tr("第二行显示 CPU / 内存"), variable=v["strip_cpu"],
                              command=lambda: self.set_strip_cpu(v["strip_cpu"].get()))
+        menu.add_checkbutton(label=tr("没插手机时显示本机电池"), variable=v["strip_laptop"],
+                             command=lambda: self.set_strip_laptop(v["strip_laptop"].get()))
         menu.add_checkbutton(label=tr("CPU / 内存监测"), variable=v["dev_stats"], command=self.toggle_dev)
         menu.add_checkbutton(label=tr("仅通过 USB 连接"), variable=v["usb_only"],
                              command=lambda: self.set_usb_only(v["usb_only"].get()))
@@ -579,7 +619,7 @@ class App:
     def show_strip_menu(self, x: int, y: int) -> None:
         # 设置可能在别处（托盘菜单、详情窗口）改过，弹出前同步勾选状态
         for key, var in self.menu_vars.items():
-            var.set(autostart_enabled() if key == "autostart" else bool(self.settings[key]))
+            var.set(autostart_enabled() if key == "autostart" else bool(self.settings.get(key, True)))
         self.menu_interval.set(float(self.settings["interval"]))
         self.menu_limit.set(int(self.settings["charge_limit"]))
         self.menu_position.set(self.settings.get("strip_position", "right"))
@@ -592,15 +632,22 @@ class App:
     def update_strip(self, s: Snapshot, d: DevStats) -> None:
         if not self.settings["taskbar_strip"]:
             return
-        # 没插手机时整块不显示；断开 5 秒后再收起，避免重连时一闪一闪
+        # 没插手机时改显示本机电池（台式机没有电池、或关了这个选项就整块收起）；
+        # 断开 5 秒后再切换，避免重连时一闪一闪
         if not s.connected:
             if self.disconnected_since is None:
                 self.disconnected_since = time.time()
             if time.time() - self.disconnected_since >= STRIP_HIDE_AFTER_SECONDS or not self.strip.hwnd:
-                self.strip.destroy()
+                if self.settings.get("strip_laptop", True) and self.laptop_status is not None:
+                    self.strip_device = "laptop"
+                    self.update_strip_laptop(self.laptop_status, s, d)
+                else:
+                    self.strip_device = "phone"
+                    self.strip.destroy()
                 return
         else:
             self.disconnected_since = None
+        self.strip_device = "phone"
         self.strip.position = self.settings.get("strip_position", "right")
         self.strip.ensure()
         power = s.system_load_w if s.system_load_w is not None else (abs(s.battery_w) if s.battery_w is not None else None)
@@ -620,6 +667,33 @@ class App:
             warning=tr("热点接管了电脑网络") if self.tether_ip else "",
             stats_note=strip_stats_note(d),
         )
+        tip = tooltip(s, d, self.tether_ip, limit=None)
+        if self.laptop_status is not None and self.laptop_status.percent is not None:
+            ls = self.laptop_status
+            tip += "\n" + f"{tr('本机电池')} · {ls.percent:.0f}% · {laptop_state(ls)}"
+        self.strip.set_tooltip(tip)
+
+    def update_strip_laptop(self, ls: LaptopStatus, s: Snapshot, d: DevStats) -> None:
+        self.strip.position = self.settings.get("strip_position", "right")
+        self.strip.ensure()
+        minutes = self.laptop.minutes_left(ls)
+        power = ls.system_w if ls.system_w is not None else (abs(ls.rate_w) if ls.rate_w is not None else None)
+        self.strip.update(
+            connected=ls.percent is not None,
+            percent=None if ls.percent is None else round(ls.percent),
+            charging=bool(ls.charging),
+            external_power=bool(ls.online),
+            discharging=ls.rate_w is not None and ls.rate_w < -0.3,
+            low=ls.percent is not None and ls.percent <= LOW_BATTERY and not ls.online,
+            power_w=power,
+            cpu_pct=None,
+            mem_pct=None,
+            show_stats=False,
+            device="laptop",
+            note=laptop_strip_note(ls, minutes),
+        )
+        # 悬停时也带上手机的状态（连接中 / 未连接），一眼知道为什么没显示手机
+        self.strip.set_tooltip(laptop_tooltip(ls, minutes) + "\n" + tooltip(s, d, limit=None))
 
     def set_usb_only(self, on: bool) -> None:
         """面板勾选框和托盘菜单共用；可能在 pystray 线程里调用，界面同步交给 Tk 线程。"""
@@ -686,12 +760,19 @@ class App:
         if not self.laptop.present:
             return
         fast = self.window.visible and self.window.page_name == "laptop"
-        if time.time() - self.laptop_read_at < (LAPTOP_FAST_SECONDS if fast else LAPTOP_IDLE_SECONDS):
+        if fast:
+            interval = LAPTOP_FAST_SECONDS
+        elif self.strip_device == "laptop" and self.strip.hwnd:
+            interval = LAPTOP_STRIP_SECONDS
+        else:
+            interval = LAPTOP_IDLE_SECONDS
+        if time.time() - self.laptop_read_at < interval:
             return
         self.laptop_read_at = time.time()
         s = self.laptop.read()
         if not s.present:
             return
+        self.laptop_status = s
         self.insights.wear.feed_laptop(s)
         self.check_laptop_drain(s)
         if fast:

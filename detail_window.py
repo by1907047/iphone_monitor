@@ -25,8 +25,8 @@ from laptop_battery import LaptopBattery, LaptopStatus
 import battery_report
 from monitor import DevStats, Monitor, Snapshot
 from ui_common import (
-    FONT_NUM, FONT_UI, LOW_BATTERY, Palette, charge_state, fmt, format_minutes, power_source, windows_dark_mode,
-    work_area,
+    FONT_NUM, FONT_UI, LOW_BATTERY, Palette, charge_state, fmt, format_minutes, laptop_state, power_source,
+    windows_dark_mode, work_area,
 )
 
 CONTENT_DIP = 440  # 内容区宽度
@@ -843,17 +843,7 @@ class DetailWindow:
         if s.percent is not None:
             color = p.green if s.charging else (p.red if draining and s.online else p.blue)
             c.create_rectangle(0, top, self.bar_w * s.percent / 100, top + self.bar_h, fill=color, width=0)
-        if s.charging:
-            state = tr("充电中")
-        elif s.online and draining:
-            state = tr("插着电源仍在耗电池")
-        elif s.online and s.percent is not None and s.percent >= 95:
-            state = tr("已充满，由电源直接供电")
-        elif s.online:
-            state = tr("已接电源，暂停充电")
-        else:
-            state = tr("使用电池")
-        lp["state"].config(text=state, fg=p.orange if s.online and draining else p.fg)
+        lp["state"].config(text=laptop_state(s), fg=p.orange if s.online and draining else p.fg)
         minutes = self.laptop.minutes_left(s)
         detail = ""
         if minutes is not None and minutes < 24 * 60:

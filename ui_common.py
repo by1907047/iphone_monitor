@@ -101,6 +101,20 @@ def charge_state(s: Snapshot) -> str:
     return tr("使用电池")
 
 
+def laptop_state(s) -> str:
+    """本机电池状态（详情页和悬停提示共用），s 是 LaptopStatus。"""
+    draining = s.rate_w is not None and s.rate_w < -0.3
+    if s.charging:
+        return tr("充电中")
+    if s.online and draining:
+        return tr("插着电源仍在耗电池")
+    if s.online and s.percent is not None and s.percent >= 95:
+        return tr("已充满，由电源直接供电")
+    if s.online:
+        return tr("已接电源，暂停充电")
+    return tr("使用电池")
+
+
 def format_minutes(minutes: float) -> str:
     if minutes < 1:
         return tr("不到 1 分钟")

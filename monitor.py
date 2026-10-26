@@ -36,7 +36,8 @@ SYSMON_SYSTEM_ATTRS = [
     "physMemSize", "vmActiveCount", "vmWireCount", "vmCompressorPageCount",
     "vmFreeCount", "vmInactiveCount", "vmSpeculativeCount",
 ]
-# 采样间隔；pymobiledevice3 11.33.1 起输出频率也跟着它（之前写死 1 ms）
+# 采样间隔；pymobiledevice3 11.33.1 起输出频率也跟着它（之前写死 1 ms）。
+# 试过只有文字条时改 5 秒一次：电脑端 CPU 并不降（2 秒约 0.8%、5 秒约 1.0% 单核，主要是隧道本身的开销），所以不分档
 SYSMON_INTERVAL_MS = 2000
 ADAPTER_NAMES = {"pd charger": "USB-C PD", "usb host": "USB 主机", "usb charger": "USB 充电器"}
 
@@ -243,6 +244,7 @@ class Monitor:
         self._dev_demand_until = 0.0
         # 电池按需快速轮询：窗口开着时用设置的间隔，否则放慢到 BACKGROUND_INTERVAL
         self._fast_until = 0.0
+        self._last_error = ""
         # 后台线程的事件循环和事件；界面线程通过 _signal 唤醒，不再 0.2 秒轮询一次
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._wake_ev: Optional[asyncio.Event] = None
@@ -374,7 +376,10 @@ class Monitor:
                 await self._session()
                 backoff = 2.0
             except Exception as exc:  # noqa: BLE001 - 任何错误都转为重连
-                log.warning("会话结束: %r", exc)
+                # 手机拔掉后每次重试都是同一个错误：只记第一次，免得日志被「未连接」刷满
+                error = repr(exc)
+                (log.debug if error == self._last_error else log.warning)("会话结束: %s", error)
+                self._last_error = error
                 self._set_status(friendly_error(exc))
                 await self._sleep(backoff)
                 backoff = min(backoff * 2, 15.0)
@@ -500,6 +505,7 @@ class Monitor:
                 connection="Wi-Fi" if conn_type == "Network" else (conn_type or "USB"),
             )
             log.info("已连接 %s", device)
+            self._last_error = ""  # 连上过，下次断开的原因照常记录
 
             disk: dict[str, Any] = {}
             disk_at = 0.0

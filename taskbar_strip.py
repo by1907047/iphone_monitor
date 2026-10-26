@@ -1,4 +1,5 @@
 """任务栏文字条：把一个小窗口挂进 Windows 任务栏（托盘区左侧），显示手机图标、电量、功率和 CPU。
+没插手机时改显示本机电池；鼠标悬停弹出系统原生提示框，内容和托盘图标的提示一样详细。
 
 Windows 11 的任务栏内容是合成层画的，普通子窗口会被盖住，只有「分层子窗口」（WS_EX_LAYERED）
 能显示在上面。这里用逐像素透明（UpdateLayeredWindow）：内容用 PIL 画好后整张贴上去，
@@ -29,6 +30,8 @@ LRESULT = ctypes.c_ssize_t
 WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
 
 user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.SendMessageW.restype = LRESULT
 user32.DefWindowProcW.restype = LRESULT
 user32.CreateWindowExW.restype = wintypes.HWND
 user32.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
@@ -73,13 +76,26 @@ WM_MOUSEMOVE, WM_LBUTTONUP, WM_RBUTTONUP, WM_MOUSELEAVE = 0x0200, 0x0202, 0x0205
 TME_LEAVE = 0x00000002
 ULW_ALPHA, AC_SRC_OVER, AC_SRC_ALPHA = 0x2, 0x0, 0x1
 IDC_HAND = 32649
+# 系统提示框（tooltips_class32）
+WS_EX_TOPMOST, CW_USEDEFAULT = 0x00000008, -0x80000000
+TTS_ALWAYSTIP, TTS_NOPREFIX = 0x01, 0x02
+TTF_IDISHWND, TTF_SUBCLASS = 0x01, 0x10
+WM_USER = 0x0400
+TTM_SETMAXTIPWIDTH, TTM_ADDTOOLW, TTM_UPDATETIPTEXTW = WM_USER + 24, WM_USER + 50, WM_USER + 57
+ICC_WIN95_CLASSES = 0xFF
+TIP_WIDTH_DIP = 360
 
 WIDTH_DIP = 128
 COMPACT_WIDTH_DIP = 70  # 窄版：只显示电量 + 功率
-APPS_POLL_SECONDS = 3  # 多久查一次任务栏应用图标排到了哪里
+APPS_POLL_SECONDS = 3  # 多久看一次任务栏有没有变化
+# UI 自动化扫一遍任务栏约 9 ms 本进程 CPU + 16 ms 资源管理器 CPU，每 3 秒一次合计约 0.9% 单核；
+# 改成先做 0.2 ms 的廉价检查（任务栏位置大小 + 会出现在任务栏上的窗口数），变了才扫，另外每分钟兜底扫一次
+APPS_FULL_SCAN_SECONDS = 60
+GWL_EXSTYLE_TB, GW_OWNER, WS_EX_APPWINDOW = -20, 4, 0x40000
 GAP_DIP = 6
 GLYPH_PHONE, GLYPH_BOLT = "\uE8EA", "\uE945"
 PHONE_W_DIP, PHONE_H_DIP = 12, 21  # 自绘手机外框尺寸
+LAPTOP_W_DIP, LAPTOP_H_DIP = 18, 13  # 自绘笔记本屏幕尺寸，下面再画一条底座
 FONTS = Path(r"C:\Windows\Fonts")
 CLASS_NAME = "iPhoneMonitorTaskbarStrip"
 
@@ -110,6 +126,16 @@ class BITMAPINFOHEADER(ctypes.Structure):
                 ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
                 ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", ctypes.c_long),
                 ("biYPelsPerMeter", ctypes.c_long), ("biClrUsed", wintypes.DWORD), ("biClrImportant", wintypes.DWORD)]
+
+
+class TOOLINFOW(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.UINT), ("uFlags", wintypes.UINT), ("hwnd", wintypes.HWND),
+                ("uId", ctypes.c_size_t), ("rect", wintypes.RECT), ("hinst", wintypes.HINSTANCE),
+                ("lpszText", wintypes.LPWSTR), ("lParam", wintypes.LPARAM), ("lpReserved", ctypes.c_void_p)]
+
+
+class INITCOMMONCONTROLSEX(ctypes.Structure):
+    _fields_ = [("dwSize", wintypes.DWORD), ("dwICC", wintypes.DWORD)]
 
 
 class WNDCLASSW(ctypes.Structure):
@@ -160,7 +186,7 @@ class AppsEdgeWatcher(threading.Thread):
     """后台每隔几秒用 UI 自动化读一次任务栏应用图标的实际右边缘（屏幕像素）。
 
     Windows 11 的任务栏图标是 XAML 画的，旧的窗口结构（ReBarWindow32）位置不变，读不到图标排到了哪里。
-    查一次约 50 ms，放在后台线程里不卡界面；读不到时 right 为 None，退回旧办法。
+    查一次约 25 ms（一半花在资源管理器里），所以只在任务栏可能变了时才查；读不到时 right 为 None，退回旧办法。
     """
 
     def __init__(self) -> None:
@@ -197,7 +223,15 @@ class AppsEdgeWatcher(threading.Thread):
             log.warning("UI 自动化不可用，只能按旧方法判断任务栏空间", exc_info=True)
             self.ready.set()
             return
+        last_sig, last_scan, rescan = None, 0.0, False
         while True:
+            sig = _taskbar_signature()
+            changed = sig != last_sig
+            if not (changed or rescan or time.monotonic() - last_scan >= APPS_FULL_SCAN_SECONDS):
+                time.sleep(APPS_POLL_SECONDS)
+                continue
+            # 窗口刚开 / 关时任务栏按钮还在动画，下一轮再扫一次拿到最终位置
+            rescan, last_sig, last_scan = changed, sig, time.monotonic()
             try:
                 taskbar = user32.FindWindowW("Shell_TrayWnd", None)
                 if taskbar:
@@ -225,6 +259,25 @@ class AppsEdgeWatcher(threading.Thread):
             time.sleep(APPS_POLL_SECONDS)
 
 
+def _taskbar_signature() -> tuple:
+    """廉价判断任务栏可能变了：任务栏窗口位置大小 + 会在任务栏上显示按钮的顶层窗口个数（约 0.2 ms）。"""
+    taskbar = user32.FindWindowW("Shell_TrayWnd", None)
+    rect = _rect(taskbar) if taskbar else None
+    count = 0
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(hwnd, _lparam):
+        nonlocal count
+        if user32.IsWindowVisible(hwnd):
+            ex = user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE_TB)
+            if (not user32.GetWindow(hwnd, GW_OWNER) and not ex & WS_EX_TOOLWINDOW) or ex & WS_EX_APPWINDOW:
+                count += 1
+        return True
+
+    user32.EnumWindows(visit, 0)
+    return taskbar, rect, count
+
+
 class TaskbarStrip:
     _class_registered = False
     _wndproc_ref: Optional[WNDPROC] = None
@@ -249,6 +302,8 @@ class TaskbarStrip:
         self.content: tuple = ()
         self.hover = False
         self.tracking = False
+        self.tip_hwnd = 0
+        self.tip_text = ""
         self.fits = True  # 放不下（会压到应用图标）时为 False，界面据此改用托盘图标
         self.position = "right"  # 优先放的一侧：right=托盘旁，left=小组件旁；由界面按设置改
         self.side = "right"  # 实际放在哪一侧
@@ -279,6 +334,9 @@ class TaskbarStrip:
         self._place()
 
     def destroy(self) -> None:
+        if self.tip_hwnd:
+            user32.DestroyWindow(self.tip_hwnd)
+            self.tip_hwnd, self.tip_text = 0, ""
         if self.hwnd:
             TaskbarStrip._instances.pop(self.hwnd, None)
             if user32.IsWindow(self.hwnd):
@@ -399,6 +457,42 @@ class TaskbarStrip:
             if self.content:
                 self._render(self.content)
 
+    # ---- 悬停提示 ----
+    def set_tooltip(self, text: str) -> None:
+        """鼠标悬停时的信息框，用系统提示框控件，样式和托盘图标的一致；正显示时改文字会直接刷新。"""
+        if not self.hwnd or text == self.tip_text:
+            return
+        if not self.tip_hwnd and not self._create_tooltip():
+            return
+        info = self._tool_info(text)
+        user32.SendMessageW(self.tip_hwnd, TTM_UPDATETIPTEXTW, 0, ctypes.addressof(info))
+        self.tip_text = text
+
+    def _tool_info(self, text: str) -> TOOLINFOW:
+        # TTF_SUBCLASS：提示框自己截获文字条的鼠标消息来决定何时弹出、何时收起
+        return TOOLINFOW(ctypes.sizeof(TOOLINFOW), TTF_IDISHWND | TTF_SUBCLASS, self.hwnd, self.hwnd,
+                         lpszText=text)
+
+    def _create_tooltip(self) -> bool:
+        comctl = ctypes.windll.comctl32
+        comctl.InitCommonControlsEx(ctypes.byref(INITCOMMONCONTROLSEX(ctypes.sizeof(INITCOMMONCONTROLSEX),
+                                                                      ICC_WIN95_CLASSES)))
+        tip = user32.CreateWindowExW(WS_EX_TOPMOST, "tooltips_class32", None, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+                                     CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+                                     None, None, kernel32.GetModuleHandleW(None), None)
+        if not tip:
+            log.warning("创建悬停提示框失败: %s", ctypes.WinError())
+            return False
+        info = self._tool_info(" ")
+        if not user32.SendMessageW(tip, TTM_ADDTOOLW, 0, ctypes.addressof(info)):
+            log.warning("悬停提示框注册失败")
+            user32.DestroyWindow(tip)
+            return False
+        # 设了最大宽度才会按 \n 换行
+        user32.SendMessageW(tip, TTM_SETMAXTIPWIDTH, 0, round(TIP_WIDTH_DIP * self.scale))
+        self.tip_hwnd = tip
+        return True
+
     # ---- 绘制 ----
     def update(
         self,
@@ -414,14 +508,17 @@ class TaskbarStrip:
         show_stats: bool,
         warning: str = "",
         stats_note: str = "",
+        device: str = "phone",
+        note: str = "",
     ) -> None:
+        """device="laptop" 时画笔记本图标，显示本机电池；note 是没有其他内容时第二行的文字。"""
         if not self.hwnd or self.size == (0, 0):
             return
         content = (connected, percent, charging, external_power, discharging, low,
                    None if power_w is None else round(power_w, 1),
                    None if cpu_pct is None else round(cpu_pct),
                    None if mem_pct is None else round(mem_pct),
-                   show_stats, warning, stats_note, self.theme, self.size)
+                   show_stats, warning, stats_note, device, note, self.theme, self.size)
         if content != self.content:
             self._render(content)  # 没变化就不重画
 
@@ -435,7 +532,7 @@ class TaskbarStrip:
                               11% · 内存 58%
         """
         (connected, percent, charging, external_power, discharging, low,
-         power_w, cpu_pct, mem_pct, show_stats, warning, stats_note, theme, size) = content
+         power_w, cpu_pct, mem_pct, show_stats, warning, stats_note, device, note, theme, size) = content
         colors = THEMES[theme or "dark"]
         width, height = size
         s = self.scale
@@ -472,7 +569,7 @@ class TaskbarStrip:
                 mem = f"{mem_pct:.0f}%" if mem_pct is not None else "…"
                 line2, line2_color = tr("{cpu} · 内存 {mem}", cpu=cpu, mem=mem), colors["muted"]
             else:
-                line2, line2_color = "", colors["muted"]
+                line2, line2_color = note, colors["muted"]
             if width < round(WIDTH_DIP * s) - 2:
                 # 窄版（任务栏图标多、空间紧时）：第一行电量，第二行功率；CPU/内存和长提示放不下
                 line2 = power_text or ("⚠" if warning else "")
@@ -480,12 +577,23 @@ class TaskbarStrip:
                     colors["warn"] if warning and not power_text else colors["muted"])
                 power_text = ""
 
-        # 手机图标：自己画圆角矩形外框（系统字形底部有条 Home 横线，不要）
-        w_icon, h_icon = round(PHONE_W_DIP * s), round(PHONE_H_DIP * s)
-        l, t = round(8 * s), round(mid - h_icon / 2)
-        r, b = l + w_icon, t + h_icon
         stroke = max(1, round(1.4 * s))
-        draw.rounded_rectangle((l, t, r, b), radius=round(w_icon * 0.26), outline=icon_color, width=stroke)
+        if device == "laptop":
+            # 笔记本：屏幕外框 + 稍宽的底座，整体垂直居中；闪电画在屏幕里
+            w_icon, h_icon = round(LAPTOP_W_DIP * s), round(LAPTOP_H_DIP * s)
+            base_gap = round(2 * s)
+            l, t = round(5 * s), round(mid - (h_icon + base_gap + stroke) / 2)
+            r, b = l + w_icon, t + h_icon
+            draw.rounded_rectangle((l, t, r, b), radius=round(2 * s), outline=icon_color, width=stroke)
+            y_base = b + base_gap
+            draw.rounded_rectangle((l - round(2 * s), y_base, r + round(2 * s), y_base + stroke),
+                                   radius=stroke // 2, fill=icon_color)
+        else:
+            # 手机图标：自己画圆角矩形外框（系统字形底部有条 Home 横线，不要）
+            w_icon, h_icon = round(PHONE_W_DIP * s), round(PHONE_H_DIP * s)
+            l, t = round(8 * s), round(mid - h_icon / 2)
+            r, b = l + w_icon, t + h_icon
+            draw.rounded_rectangle((l, t, r, b), radius=round(w_icon * 0.26), outline=icon_color, width=stroke)
         if bolt:
             # 按实际画出来的笔画居中（字体度量会带上留白，按它居中看起来偏上）
             bx0, by0, bx1, by1 = self._bolt_ink_bbox()
