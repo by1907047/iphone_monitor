@@ -35,7 +35,7 @@ from taskbar_strip import TaskbarStrip
 from ui_common import charge_state, enable_per_monitor_dpi, fmt, format_minutes, laptop_state, taskbar_dpi
 
 APP_NAME = "iPhoneMonitor"
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 HERE = Path(__file__).resolve().parent
 SETTINGS_FILE = Path(os.environ.get("APPDATA", HERE)) / APP_NAME / "settings.json"
 DEFAULT_SETTINGS = {

@@ -39,6 +39,8 @@ user32.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LP
                                    wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID]
 user32.SetParent.restype = wintypes.HWND
 user32.SetParent.argtypes = [wintypes.HWND, wintypes.HWND]
+user32.GetParent.restype = wintypes.HWND
+user32.GetParent.argtypes = [wintypes.HWND]
 user32.FindWindowW.restype = wintypes.HWND
 user32.FindWindowExW.restype = wintypes.HWND
 user32.FindWindowExW.argtypes = [wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR]
@@ -304,6 +306,7 @@ class TaskbarStrip:
         self.tracking = False
         self.tip_hwnd = 0
         self.tip_text = ""
+        self.mount_failures = 0
         self.fits = True  # 放不下（会压到应用图标）时为 False，界面据此改用托盘图标
         self.position = "right"  # 优先放的一侧：right=托盘旁，left=小组件旁；由界面按设置改
         self.side = "right"  # 实际放在哪一侧
@@ -325,9 +328,11 @@ class TaskbarStrip:
             self.destroy()
             return
         theme = taskbar_theme()
-        if not (self.hwnd and user32.IsWindow(self.hwnd)) or taskbar != self.taskbar:
+        if (not (self.hwnd and user32.IsWindow(self.hwnd)) or taskbar != self.taskbar
+                or user32.GetParent(self.hwnd) != taskbar):
             self.destroy()
-            self._create(taskbar)
+            if not self._create(taskbar):
+                return  # 开机时任务栏还没准备好，下次 tick 再试
         if theme != self.theme:
             self.theme = theme
             self.content = ()  # 换主题后重画
@@ -344,7 +349,7 @@ class TaskbarStrip:
         self.hwnd = self.taskbar = 0
         self.placement = self.content = ()
 
-    def _create(self, taskbar: int) -> None:
+    def _create(self, taskbar: int) -> bool:
         hinst = kernel32.GetModuleHandleW(None)
         if not TaskbarStrip._class_registered:
             TaskbarStrip._wndproc_ref = WNDPROC(TaskbarStrip._wndproc)  # 必须一直持有，否则回调被回收
@@ -360,10 +365,23 @@ class TaskbarStrip:
         user32.SetParent(hwnd, taskbar)
         style = user32.GetWindowLongPtrW(hwnd, GWL_STYLE)
         user32.SetWindowLongPtrW(hwnd, GWL_STYLE, (style | WS_CHILD) & ~WS_POPUP)
+        # 开机登录后资源管理器刚起来时 SetParent 会失败，窗口就挂到了桌面上（屏幕左上角），任务栏里看不到；
+        # 挂不上就销毁，下次 tick 重试
+        if user32.GetParent(hwnd) != taskbar:
+            user32.DestroyWindow(hwnd)
+            if self.mount_failures == 0:
+                log.warning("任务栏还没准备好，文字条稍后重试挂载")
+            self.mount_failures += 1
+            return False
         TaskbarStrip._instances[hwnd] = self
         self.hwnd, self.taskbar = hwnd, taskbar
         self.size = (0, 0)
-        log.info("任务栏文字条已挂载")
+        if self.mount_failures:
+            log.info("任务栏文字条已挂载（重试 %d 次后）", self.mount_failures)
+            self.mount_failures = 0
+        else:
+            log.info("任务栏文字条已挂载")
+        return True
 
     def _place(self) -> None:
         """按设置放在托盘旁（右）或小组件旁（左）。
